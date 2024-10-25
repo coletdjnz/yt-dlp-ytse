@@ -31,11 +31,8 @@ from yt_dlp_plugins.extractor._ump_proto import StreamProtectionStatus, parse_me
 
 class UMPFD(FileDownloader):
 
-    def get_extractor_arg(self, name):
-        return traverse_obj(self.ydl.params, ('extractor_args', 'youtube', name))
-
     def write_ump_debug(self, part, message):
-        if int_or_none(self.get_extractor_arg('ump_debug')) == 1:
+        if traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'ump_debug', 0, {int_or_none}), get_all=False) == 1:
             self.write_debug(f'[{part.part_type.name}]: (Size {part.size}) {message}')
 
     def write_ump_warning(self, part, message):
