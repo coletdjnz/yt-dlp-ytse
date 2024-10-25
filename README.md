@@ -74,9 +74,9 @@ Enable UMP formats:
 
 `--extractor-args youtube:formats=ump`
 
-Prioritize with UMP formats:
+Prioritize UMP formats:
 
-`--extractor-args youtube:formats=ump`
+`-S proto:ump`
 
 Debug UMP messages:
 
