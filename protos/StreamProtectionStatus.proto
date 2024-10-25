@@ -1,0 +1,12 @@
+syntax = "proto2";
+package videoplayback;
+
+message StreamProtectionStatus {
+  enum Status {
+    OK = 1;
+    ATTESTATION_PENDING = 2;
+    ATTESTATION_REQUIRED = 3;
+  }
+  optional Status status = 1;
+  optional int32 unknown_field_2 = 2;
+}

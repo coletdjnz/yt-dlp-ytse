@@ -1,0 +1,6 @@
+syntax = "proto2";
+package videoplayback;
+
+message SabrRedirect {
+  optional string redirect_url = 1;
+}

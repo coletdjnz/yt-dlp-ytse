@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "yt-dlp-ytse"
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE"}
+keywords = ["yt-dlp", "yt-dlp-plugin"]
+authors = [
+  { name = "coletdjnz", email = "coletdjnz@protonmail.com" },
+]
+dependencies = ["protobuf"]
+
+[tool.hatch.env.default]
+installer = "uv"
+path = ".venv"
+
+[tool.hatch.build.targets.wheel]
+packages = ["yt_dlp_plugins"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

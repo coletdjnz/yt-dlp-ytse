@@ -1,0 +1,12 @@
+syntax = "proto2";
+package videoplayback;
+
+message SabrError {
+  optional string type = 1;
+  optional int32 code = 2;
+  optional UnknownMessage unknown_message = 3;
+
+  message UnknownMessage {
+    optional int32 unknown_field_1 = 1;
+  }
+}
