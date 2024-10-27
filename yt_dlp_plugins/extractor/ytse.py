@@ -25,7 +25,7 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
 
 
 import yt_dlp.downloader
-from yt_dlp_plugins.extractor._umpfd import UMPFD
+from yt_dlp_plugins.extractor._ytse.downloader.ump import UMPFD
 
 yt_dlp.downloader.PROTOCOL_MAP['ump'] = UMPFD
 

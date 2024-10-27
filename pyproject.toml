@@ -12,7 +12,7 @@ keywords = ["yt-dlp", "yt-dlp-plugin"]
 authors = [
   { name = "coletdjnz", email = "coletdjnz@protonmail.com" },
 ]
-dependencies = ["protobuf"]
+dependencies = ["protobug"]
 
 [tool.hatch.env.default]
 installer = "uv"
