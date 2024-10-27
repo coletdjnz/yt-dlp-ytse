@@ -2,6 +2,7 @@ import base64
 import os
 import random
 import time
+import protobug
 from yt_dlp import DownloadError, traverse_obj
 
 from yt_dlp.downloader.common import FileDownloader
@@ -18,15 +19,14 @@ from yt_dlp.utils import (
     XAttrMetadataError,
     XAttrUnavailableError,
     encodeFilename,
-    int_or_none,
     parse_http_range,
     try_call,
     int_or_none,
     write_xattr,
 )
 from yt_dlp.utils.networking import HTTPHeaderDict
-from yt_dlp_plugins.extractor._ump import UMPParser, UMPPartType
-from yt_dlp_plugins.extractor._ump_proto import StreamProtectionStatus, parse_media_header, parse_stream_protection_status, parse_sabr_error, parse_sabr_redirect
+from yt_dlp_plugins.extractor._ytse.ump import UMPParser, UMPPartType
+from yt_dlp_plugins.extractor._ytse.protos import MediaHeader, SabrError, SabrRedirect, StreamProtectionStatus
 
 
 class UMPFD(FileDownloader):
@@ -233,7 +233,7 @@ class UMPFD(FileDownloader):
             ump = UMPParser(ctx.data)
             for part in ump.iter_parts():
                 if part.part_type == UMPPartType.MEDIA_HEADER:
-                    media_header = parse_media_header(part.data)
+                    media_header = protobug.loads(part.data, MediaHeader)
                     self.write_ump_debug(part, f'Parsed header: {media_header} Data: {part.get_b64_str()}')
                     continue
 
@@ -241,15 +241,15 @@ class UMPFD(FileDownloader):
                     self.write_ump_debug(part, f' Header ID: {part.data[0]}')
                     break
                 elif part.part_type == UMPPartType.STREAM_PROTECTION_STATUS:
-                    sps = parse_stream_protection_status(part.data)
-                    self.write_ump_debug(part, f'Status: {StreamProtectionStatus.Name(sps.status)} Data: {part.get_b64_str()}')
-                    if sps.status == StreamProtectionStatus.ATTESTATION_REQUIRED:
+                    sps = protobug.loads(part.data, StreamProtectionStatus)
+                    self.write_ump_debug(part, f'Status: {StreamProtectionStatus.Status(sps.status).name} Data: {part.get_b64_str()}')
+                    if sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
                         ctx.data.close()
                         self.report_error('StreamProtectionStatus: Attestation Required (missing PO Token?)')
                         return False
 
                 elif part.part_type == UMPPartType.SABR_REDIRECT:
-                    sabr_redirect = parse_sabr_redirect(part.data)
+                    sabr_redirect = protobug.loads(part.data, SabrRedirect)
                     ctx.url = sabr_redirect.redirect_url
                     self.write_ump_debug(part, f'New URL: {ctx.url}')
                     if not ctx.url:
@@ -334,7 +334,7 @@ class UMPFD(FileDownloader):
 
                 elif part.part_type == UMPPartType.SABR_ERROR:
                     ctx.data.close()
-                    sabr_error = parse_sabr_error(part.data)
+                    sabr_error = protobug.loads(part.data, SabrError)
                     self.write_ump_debug(part, f'Parsed: {sabr_error} Data: {part.get_b64_str()}')
                     raise RetryDownload(Exception(f'[SABRError]: YouTube returned an error for this stream: (code={sabr_error.code}, type={sabr_error.type})'))
 
