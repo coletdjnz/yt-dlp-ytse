@@ -1,9 +1,36 @@
 import re
-from yt_dlp import traverse_obj, int_or_none, float_or_none, join_nonempty
+import sys
+from yt_dlp import traverse_obj, int_or_none, float_or_none, join_nonempty, NO_DEFAULT
 from yt_dlp.extractor.openload import PhantomJSwrapper
 from yt_dlp.extractor.youtube import YoutubeIE, short_client_name
 from yt_dlp.jsinterp import JSInterpreter
 from yt_dlp.utils import update_url_query, qualities, str_or_none, parse_qs, ExtractorError, try_call, try_get, filesize_from_tbr, mimetype2ext, parse_codecs
+
+import yt_dlp.downloader
+from yt_dlp_plugins.extractor._ytse.downloader.ump import UMPFD
+from yt_dlp_plugins.extractor._ytse.downloader.sabr import SABRFD
+
+
+from yt_dlp.downloader import get_suitable_downloader as get_suitable_downloader_original, _get_suitable_downloader
+
+yt_dlp.downloader.PROTOCOL_MAP['ump'] = UMPFD
+yt_dlp.downloader.PROTOCOL_MAP['sabr'] = SABRFD
+
+
+def get_suitable_downloader(info_dict, params={}, default=NO_DEFAULT, protocol=None, to_stdout=False):
+    protocols = (protocol or info_dict['protocol']).split('+')
+    info_copy = info_dict.copy()
+    info_copy['to_stdout'] = to_stdout
+
+    downloaders = [_get_suitable_downloader(info_copy, proto, params, default) for proto in protocols]
+    if set(downloaders) == {SABRFD} and SABRFD.can_download(info_copy):
+        return SABRFD
+
+    return get_suitable_downloader_original(info_dict, protocol, params, default)
+
+
+sys.modules.get('yt_dlp.downloader').get_suitable_downloader = get_suitable_downloader
+sys.modules.get('yt_dlp.YoutubeDL').get_suitable_downloader = get_suitable_downloader
 
 
 class _YTSE(YoutubeIE, plugin_name='YTSE'):
@@ -199,10 +226,3 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
                 formats.extend(self._extract_sabr_formats(video_id, player_response, player_url, live_status, duration))
 
         return live_broadcast_details, live_status, streaming_data, formats, subtitles
-
-
-import yt_dlp.downloader
-from yt_dlp_plugins.extractor._ytse.downloader.ump import UMPFD
-
-yt_dlp.downloader.PROTOCOL_MAP['ump'] = UMPFD
-
