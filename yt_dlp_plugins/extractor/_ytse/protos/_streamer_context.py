@@ -17,29 +17,29 @@ class GLDeviceInfo:
 
 @protobug.message
 class ClientInfo:
-    device_make: typing.Optional[protobug.String] = protobug.field(12)
-    device_model: typing.Optional[protobug.String] = protobug.field(13)
-    client_name: typing.Optional[protobug.Int32] = protobug.field(16)
-    client_version: typing.Optional[protobug.String] = protobug.field(17)
-    os_name: typing.Optional[protobug.String] = protobug.field(18)
-    os_version: typing.Optional[protobug.String] = protobug.field(19)
-    accept_language: typing.Optional[protobug.String] = protobug.field(21)
-    accept_region: typing.Optional[protobug.String] = protobug.field(22)
-    screen_width_points: typing.Optional[protobug.Int32] = protobug.field(37)
-    screen_height_points: typing.Optional[protobug.Int32] = protobug.field(38)
-    screen_width_inches: typing.Optional[protobug.Float] = protobug.field(39)
-    screen_height_inches: typing.Optional[protobug.Float] = protobug.field(40)
-    screen_pixel_density: typing.Optional[protobug.Int32] = protobug.field(41)
-    client_form_factor: typing.Optional[ClientFormFactor] = protobug.field(46)
-    gmscore_version_code: typing.Optional[protobug.Int32] = protobug.field(50)
-    window_width_points: typing.Optional[protobug.Int32] = protobug.field(55)
-    window_height_points: typing.Optional[protobug.Int32] = protobug.field(56)
-    android_sdk_version: typing.Optional[protobug.Int32] = protobug.field(64)
-    screen_density_float: typing.Optional[protobug.Float] = protobug.field(65)
-    utc_offset_minutes: typing.Optional[protobug.Int64] = protobug.field(67)
-    time_zone: typing.Optional[protobug.String] = protobug.field(80)
-    chipset: typing.Optional[protobug.String] = protobug.field(92)
-    gl_device_info: typing.Optional[GLDeviceInfo] = protobug.field(102)
+    device_make: typing.Optional[protobug.String] = protobug.field(12, default=None)
+    device_model: typing.Optional[protobug.String] = protobug.field(13, default=None)
+    client_name: typing.Optional[protobug.Int32] = protobug.field(16, default=None)
+    client_version: typing.Optional[protobug.String] = protobug.field(17, default=None)
+    os_name: typing.Optional[protobug.String] = protobug.field(18, default=None)
+    os_version: typing.Optional[protobug.String] = protobug.field(19, default=None)
+    accept_language: typing.Optional[protobug.String] = protobug.field(21, default=None)
+    accept_region: typing.Optional[protobug.String] = protobug.field(22, default=None)
+    screen_width_points: typing.Optional[protobug.Int32] = protobug.field(37, default=None)
+    screen_height_points: typing.Optional[protobug.Int32] = protobug.field(38, default=None)
+    screen_width_inches: typing.Optional[protobug.Float] = protobug.field(39, default=None)
+    screen_height_inches: typing.Optional[protobug.Float] = protobug.field(40, default=None)
+    screen_pixel_density: typing.Optional[protobug.Int32] = protobug.field(41, default=None)
+    client_form_factor: typing.Optional[ClientFormFactor] = protobug.field(46, default=None)
+    gmscore_version_code: typing.Optional[protobug.Int32] = protobug.field(50, default=None)
+    window_width_points: typing.Optional[protobug.Int32] = protobug.field(55, default=None)
+    window_height_points: typing.Optional[protobug.Int32] = protobug.field(56, default=None)
+    android_sdk_version: typing.Optional[protobug.Int32] = protobug.field(64, default=None)
+    screen_density_float: typing.Optional[protobug.Float] = protobug.field(65, default=None)
+    utc_offset_minutes: typing.Optional[protobug.Int64] = protobug.field(67, default=None)
+    time_zone: typing.Optional[protobug.String] = protobug.field(80, default=None)
+    chipset: typing.Optional[protobug.String] = protobug.field(92, default=None)
+    gl_device_info: typing.Optional[GLDeviceInfo] = protobug.field(102, default=None)
 
 
 @protobug.message
@@ -62,15 +62,14 @@ class Gqa:
 
 @protobug.message
 class StreamerContext:
-    client_info: ClientInfo = protobug.field(1)
-    po_token: typing.Optional[protobug.Bytes] = protobug.field(2)
-    playback_cookie: typing.Optional[protobug.Bytes] = protobug.field(3)
-    gp: typing.Optional[protobug.Bytes] = protobug.field(4)
-    field5: list[Fqa] = protobug.field(5)
-    field6: list[protobug.Int32] = protobug.field(6)
-    field7: typing.Optional[protobug.String] = protobug.field(7)
-    field8: Gqa = protobug.field(8)
-
+    client_info: ClientInfo = protobug.field(1, default=None)
+    po_token: typing.Optional[protobug.Bytes] = protobug.field(2, default=None)
+    playback_cookie: typing.Optional[protobug.Bytes] = protobug.field(3, default=None)
+    # gp: typing.Optional[protobug.Bytes] = protobug.field(4, default=None)
+    # field5: list[Fqa] = protobug.field(5, default=None)
+    # field6: list[protobug.Int32] = protobug.field(6, default=None)
+    # field7: typing.Optional[protobug.String] = protobug.field(7, default=None)
+    # field8: Gqa = protobug.field(8, default=None)
 
 """
 

@@ -4,6 +4,7 @@ import enum
 import protobug
 from yt_dlp import traverse_obj
 from yt_dlp.downloader import FileDownloader
+from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request
 from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect
 from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
@@ -11,10 +12,10 @@ from yt_dlp_plugins.extractor._ytse.protos._streamer_context import StreamerCont
 from yt_dlp_plugins.extractor._ytse.ump import UMPParser, UMPPart, UMPPartType
 
 
-
 class FormatType(enum.Enum):
     AUDIO = 'audio'
     VIDEO = 'video'
+
 
 @dataclasses.dataclass
 class SABRFormat:
@@ -54,25 +55,28 @@ class SABRStream:
         # initialize client abr state
         self.client_abr_state = ClientAbrState(
             last_manual_direction=0,
-            time_since_last_manual_format_selection_ms=0,
-            visibility=0,
-            start_time_ms=0, # todo
-            media_type=media_type,
+           time_since_last_manual_format_selection_ms=0,
+           visibility=0,
+           start_time_ms=0, # todo
+            #quality="720",
+
+           media_type=media_type,
         )
 
         while True:
+            po_token = self.po_token_fn()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self.client_abr_state,
                 selected_video_format_ids=selected_video_format_ids,
                 selected_audio_format_ids=selected_audio_format_ids,
-                # selected_format_ids
-                video_playabck_ustreamer_config=base64.b64decode(self.video_playback_ustreamer_config),
+                selected_format_ids=[],
+                video_playback_ustreamer_config=base64.urlsafe_b64decode(self.video_playback_ustreamer_config),
                 streamer_context = StreamerContext(
-                    po_token= base64.b64decode(self.po_token_fn()),
-                    playback_cookie = protobug.dumps(self.playback_cookie),
-                    client_info = self.client_info
-                ),
-                buffered_ranges = [],
+                     po_token = po_token and base64.urlsafe_b64decode(po_token),
+                     playback_cookie = self.playback_cookie and protobug.dumps(self.playback_cookie),
+                     client_info = self.client_info
+                 ),
+                #buffered_ranges = [],
             )
             payload = protobug.dumps(vpabr)
 
@@ -83,6 +87,8 @@ class SABRStream:
                     data=payload,
                 )
             )
+
+            self.parse_ump_response(response)
 
     def write_ump_debug(self, part, message):
         #if traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'ump_debug', 0, {int_or_none}), get_all=False) == 1:
@@ -145,8 +151,56 @@ class SABRFD(FileDownloader):
         po_token_fn = lambda: None
         server_abr_streaming_url = None
         video_playback_ustreamer_config = None
+        client_name = None
+        innertube_context = None
 
         for format in requested_formats:
-            pass
+            sabr_config = format.get('_sabr_config')
+
+            if not server_abr_streaming_url:
+                server_abr_streaming_url = format.get('url')
+
+            if server_abr_streaming_url != format.get('url'):
+                self.report_error('All formats must have the same server_abr_streaming_url')
+                return
+
+            if not video_playback_ustreamer_config:
+                video_playback_ustreamer_config = sabr_config.get('video_playback_ustreamer_config')
+
+            if video_playback_ustreamer_config != sabr_config.get('video_playback_ustreamer_config'):
+                self.report_error('All formats must have the same video_playback_ustreamer_config')
+                return
+
+            if not client_name:
+                client_name = sabr_config.get('client_name')
+
+            if client_name != sabr_config.get('client_name'):
+                self.report_error('All formats must have the same client_name')
+                return
+
+            if not innertube_context:
+                innertube_context = sabr_config.get('innertube_context')
+
+            po_token = sabr_config.get('po_token')
+            if po_token:
+                po_token_fn = lambda: po_token
+
+            formats.append(SABRFormat(
+                itag = int(sabr_config['itag']),
+                last_modified_at = int(sabr_config.get('last_modified')),
+                format_type = FormatType.VIDEO if format.get('acodec') == 'none' else FormatType.AUDIO,
+                quality=None,
+                height=None,
+                write_callback=None
+            ))
+
+        innertube_client = INNERTUBE_CLIENTS.get(client_name)
+        client_info = ClientInfo(
+            client_name = innertube_client['INNERTUBE_CONTEXT_CLIENT_NAME'],
+            client_version= traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'clientVersion')),
+        )
+
+        stream = SABRStream(self, server_abr_streaming_url, video_playback_ustreamer_config, po_token_fn, formats, client_info)
+        stream.download()
 
 
