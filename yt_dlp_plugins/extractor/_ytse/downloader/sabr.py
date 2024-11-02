@@ -99,7 +99,8 @@ class SABRStream:
         )
 
         requests = 0
-        while (not self.total_duration_ms) or self.client_abr_state.start_time_ms < self.total_duration_ms:
+        # add a small buffer to account for small difference in format length
+        while (not self.total_duration_ms) or self.client_abr_state.start_time_ms + 100 < self.total_duration_ms:
             po_token = self.po_token_fn()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self.client_abr_state,
@@ -130,9 +131,12 @@ class SABRStream:
 
             self.parse_ump_response(response)
 
-            first_format = list(self.initialized_formats.values())[0]
+            # first_format = list(self.initialized_formats.values())[0]
+            # find format with smallest current_duration_ms
+            first_format = min(self.initialized_formats.values(), key=lambda x: x.current_duration_ms)
             self.client_abr_state.start_time_ms = first_format.current_duration_ms
-            self.total_duration_ms = first_format.total_duration_ms
+            if not self.total_duration_ms:
+                self.total_duration_ms = first_format.total_duration_ms
 
             requests += 1
            # if requests == 2:
