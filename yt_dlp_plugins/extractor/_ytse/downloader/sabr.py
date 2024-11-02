@@ -33,13 +33,27 @@ class SABRFormat:
 
 
 @dataclasses.dataclass
+class Sequence:
+    format_id: FormatId
+    is_init_segment: bool = False
+    duration_ms: int = 0
+    start_ms: int = 0
+    start_data_range: int = 0
+    sequence_number: int = 0
+    content_length: int = 0
+
+
+@dataclasses.dataclass
 class InitializedFormat:
     format_id: FormatId
     video_id: str
-    duration_ms: int
-    mime_type: str
     buffered_range: BufferedRange
     requested_format: SABRFormat
+    total_duration_ms: int = 0
+    current_content_length: int = 0
+    current_duration_ms: int = 0
+    mime_type: str = None
+    sequences: dict[int, Sequence] = dataclasses.field(default_factory=dict)
 
 
 class SABRStream:
@@ -55,8 +69,11 @@ class SABRStream:
         self.playback_cookie: PlaybackCookie = None
 
         self.initialized_formats: dict[str, InitializedFormat] = {}
+        self.header_id_to_format_map: dict[int, str] = {}
 
         self.fd: FileDownloader = fd
+
+        self.total_duration_ms = None
 
     def download(self):
         video_formats = [format for format in self.requestedFormats if format.format_type == FormatType.VIDEO]
@@ -82,13 +99,15 @@ class SABRStream:
         )
 
         requests = 0
-        while True:
+        while (not self.total_duration_ms) or self.client_abr_state.start_time_ms < self.total_duration_ms:
             po_token = self.po_token_fn()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self.client_abr_state,
                 selected_video_format_ids=selected_video_format_ids,
                 selected_audio_format_ids=selected_audio_format_ids,
-                selected_format_ids=[],
+                selected_format_ids=[
+                    initialized_format.format_id for initialized_format in self.initialized_formats.values()
+                ],
                 video_playback_ustreamer_config=base64.urlsafe_b64decode(self.video_playback_ustreamer_config),
                 streamer_context=StreamerContext(
                      po_token=po_token and base64.urlsafe_b64decode(po_token),
@@ -99,6 +118,8 @@ class SABRStream:
             )
             payload = protobug.dumps(vpabr)
 
+            self.fd.write_debug(f'Requested video playback abr request. {vpabr}')
+
             response = self.fd.ydl.urlopen(
                 Request(
                     url = self.server_abr_streaming_url,
@@ -108,9 +129,17 @@ class SABRStream:
             )
 
             self.parse_ump_response(response)
+
+            first_format = list(self.initialized_formats.values())[0]
+            self.client_abr_state.start_time_ms = first_format.current_duration_ms
+            self.total_duration_ms = first_format.total_duration_ms
+
             requests += 1
-            if requests == 2:
-                break
+           # if requests == 2:
+          #      break
+
+        for initialized_format in self.initialized_formats.values():
+            initialized_format.requested_format.write_callback(b'', close=True)
 
     def write_ump_debug(self, part, message):
         #if traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'ump_debug', 0, {int_or_none}), get_all=False) == 1:
@@ -125,11 +154,67 @@ class SABRStream:
             if part.part_type == UMPPartType.MEDIA_HEADER:
                 media_header = protobug.loads(part.data, MediaHeader)
                 self.write_ump_debug(part, f'Parsed header: {media_header} Data: {part.get_b64_str()}')
+
+                if not media_header.format_id:
+                    continue
+                initialized_format = self.initialized_formats.get(get_format_key(media_header.format_id))
+                if not initialized_format:
+                    self.write_ump_warning(part, f'Initialized format not found for {media_header.format_id}')
+                    continue
+
+                sequence_number = media_header.sequence_number
+                if (sequence_number or 0) in initialized_format.sequences:
+                    self.write_ump_warning(part, f'Sequence {sequence_number} already found, skipping')
+                    continue
+
+                is_init_segment = media_header.is_init_segment
+
+                initialized_format.sequences[sequence_number or 0] = Sequence(
+                    format_id=media_header.format_id,
+                    is_init_segment=is_init_segment,
+                    duration_ms=media_header.duration_ms,
+                    start_data_range=media_header.start_data_range,
+                    sequence_number=sequence_number,
+                    content_length=media_header.content_length,
+                    start_ms=media_header.start_ms
+                )
+
+                self.header_id_to_format_map[media_header.header_id] = get_format_key(media_header.format_id)
+
+                if not is_init_segment:
+                    initialized_format.buffered_range.end_segment_index += 1
+                    initialized_format.buffered_range.duration_ms += media_header.duration_ms
+
+                initialized_format.current_content_length += media_header.content_length
+                initialized_format.current_duration_ms += media_header.duration_ms or 0
+
                 continue
 
+            elif part.part_type == UMPPartType.MEDIA:
+                header_id = part.data[0]
+                self.write_ump_debug(part, f'Header ID: {header_id}')
+
+                format_key = self.header_id_to_format_map.get(header_id)
+                if not format_key:
+                    self.write_ump_warning(part, f'Initialized Format not found for header ID {header_id}')
+                    continue
+
+                initialized_format = self.initialized_formats.get(format_key)
+
+                if not initialized_format:
+                    self.write_ump_warning(part, f'Initialized Format not found for header ID {header_id}')
+                    continue
+
+           #     self.write_ump_debug(part, f'Writing {len(part.data[1:])} bytes to initialized format {initialized_format}')
+
+                write_callback = initialized_format.requested_format.write_callback
+                write_callback(part.data[1:])
+
             elif part.part_type == UMPPartType.MEDIA_END:
-                self.write_ump_debug(part, f' Header ID: {part.data[0]}')
-                break
+                header_id = part.data[0]
+                self.write_ump_debug(part, f' Header ID: {header_id}')
+                self.header_id_to_format_map.pop(header_id, None)
+                continue
             elif part.part_type == UMPPartType.STREAM_PROTECTION_STATUS:
                 sps = protobug.loads(part.data, StreamProtectionStatus)
                 self.write_ump_debug(part, f'Status: {StreamProtectionStatus.Status(sps.status).name} Data: {part.get_b64_str()}')
@@ -155,8 +240,8 @@ class SABRStream:
                 initialized_format_key = get_format_key(fmt_init_metadata.format_id)
 
                 if initialized_format_key in self.initialized_formats:
-                    self.report_error('Format already initialized')
-                    return False
+                    self.fd.report_warning('Format already initialized')
+                    continue
                 # find matching requested format key
 
                 matching_requested_format = next((format for format in self.requestedFormats if get_format_key(FormatId(itag=format.itag, last_modified=format.last_modified_at) ) == initialized_format_key), None)
@@ -166,21 +251,23 @@ class SABRStream:
                     continue
 
                 initialized_format = InitializedFormat(
-                    format_id = fmt_init_metadata.format_id,
-                    duration_ms = fmt_init_metadata.duration_ms,
-                    mime_type = fmt_init_metadata.mime_type,
-                    buffered_range = BufferedRange(
-                        format_id = fmt_init_metadata.format_id,
-                        start_time_ms = 0,
-                        duration_ms = 0,
-                        start_segment_index = 0,
-                        end_segment_index = 0,
+                    format_id=fmt_init_metadata.format_id,
+                    total_duration_ms=fmt_init_metadata.duration_ms,
+                    mime_type=fmt_init_metadata.mime_type,
+                    buffered_range=BufferedRange(
+                        format_id=fmt_init_metadata.format_id,
+                        start_time_ms=0,
+                        duration_ms=0,
+                        start_segment_index=0,
+                        end_segment_index=0,
                     ),
-                    video_id = fmt_init_metadata.video_id,
+                    video_id=fmt_init_metadata.video_id,
                     requested_format=matching_requested_format
                 )
 
                 self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
+
+                self.write_ump_debug(part, f'Initialized Format: {initialized_format}')
                 continue
 
             elif part.part_type == UMPPartType.NEXT_REQUEST_POLICY:
@@ -193,10 +280,8 @@ class SABRStream:
                     self.write_ump_debug(part, f'Playback Cookie: {playback_cookie}')
                 continue
             else:
-                self.write_ump_warning(part, f'Unhandled part type: {part.part_type.name} Data: {part.get_b64_str()}')
+                self.write_ump_warning(part, f'Unhandled part type: {part.part_type.name}:{part.part_id} Data: {part.get_b64_str()}')
                 continue
-
-
 
 
 class SABRFD(FileDownloader):
@@ -224,6 +309,35 @@ class SABRFD(FileDownloader):
         video_playback_ustreamer_config = None
         client_name = None
         innertube_context = None
+        def create_write_callback(format):
+            stream = None
+            tmpfilename = self.temp_name(format.get('filepath'))
+            open_mode = 'wb'
+            try:
+                stream, tmpfilename = self.sanitize_open(
+                tmpfilename, open_mode)
+                assert stream is not None
+                filename = self.undo_temp_name(tmpfilename)
+                self.report_destination(filename)
+            except OSError as err:
+                self.report_error(f'unable to open for writing: {err}')
+                return False
+
+            def callback(data, close=False):
+                if close:
+                    self.write_debug(f'Closing {filename}')
+                    stream.close()
+                    return True
+                self.write_debug(f'Writing {len(data)} bytes to {filename}')
+                try:
+                    stream.write(data)
+                except OSError as err:
+                    self.to_stderr('\n')
+                    self.report_error(f'unable to write data: {err}')
+                    return False
+
+            return callback
+
 
         for format in requested_formats:
             sabr_config = format.get('_sabr_config')
@@ -256,13 +370,14 @@ class SABRFD(FileDownloader):
             if po_token:
                 po_token_fn = lambda: po_token
 
+
             formats.append(SABRFormat(
                 itag = int(sabr_config['itag']),
                 last_modified_at = int(sabr_config.get('last_modified')),
                 format_type = FormatType.VIDEO if format.get('acodec') == 'none' else FormatType.AUDIO,
                 quality=None,
                 height=None,
-                write_callback=None
+                write_callback=create_write_callback(format)
             ))
 
         innertube_client = INNERTUBE_CLIENTS.get(client_name)
@@ -273,3 +388,9 @@ class SABRFD(FileDownloader):
 
         stream = SABRStream(self, server_abr_streaming_url, video_playback_ustreamer_config, po_token_fn, formats, client_info)
         stream.download()
+
+        for format in requested_formats:
+            filename = format.get('filepath')
+            self.try_rename(self.temp_name(filename), filename)
+
+        return True

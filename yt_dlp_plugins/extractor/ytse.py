@@ -226,5 +226,5 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
             for player_response in player_responses:
                 formats.extend(self._extract_sabr_formats(video_id, player_response, player_url, None, duration))
 
-        live_broadcast_details, live_status, streaming_data, subtitles = None, None, None, None
+        live_broadcast_details, live_status, streaming_data, subtitles = None, None, None, dict()
         return live_broadcast_details, live_status, streaming_data, formats, subtitles

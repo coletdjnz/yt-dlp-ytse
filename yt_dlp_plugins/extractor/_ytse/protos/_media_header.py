@@ -1,6 +1,8 @@
 import enum
 import typing
 import protobug
+from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
+from yt_dlp_plugins.extractor._ytse.protos._time_range import TimeRange
 
 
 @protobug.message
@@ -22,5 +24,7 @@ class MediaHeader:
     unknown_field_10: typing.Optional[protobug.Int64] = protobug.field(10, default=None)
     start_ms: typing.Optional[protobug.Int32] = protobug.field(11, default=None)
     duration_ms: typing.Optional[protobug.Int32] = protobug.field(12, default=None)
+    format_id: typing.Optional[FormatId] = protobug.field(13, default=None)
     content_length: typing.Optional[protobug.Int64] = protobug.field(14, default=None)
+    time_range: typing.Optional[TimeRange] = protobug.field(15, default=None)
 
