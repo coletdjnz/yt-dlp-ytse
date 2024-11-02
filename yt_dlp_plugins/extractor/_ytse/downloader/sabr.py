@@ -6,7 +6,8 @@ from yt_dlp import traverse_obj
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request
-from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect
+from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect, FormatInitializationMetadata
+from yt_dlp_plugins.extractor._ytse.protos._buffered_range import BufferedRange
 from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
 from yt_dlp_plugins.extractor._ytse.protos._streamer_context import StreamerContext, ClientInfo
 from yt_dlp_plugins.extractor._ytse.ump import UMPParser, UMPPart, UMPPartType
@@ -17,6 +18,10 @@ class FormatType(enum.Enum):
     VIDEO = 'video'
 
 
+def get_format_key(format_id: FormatId):
+    return f'{format_id.itag}-{format_id.last_modified}'
+
+
 @dataclasses.dataclass
 class SABRFormat:
     itag: int
@@ -25,6 +30,17 @@ class SABRFormat:
     quality: str
     height: str
     write_callback: callable
+
+
+@dataclasses.dataclass
+class InitializedFormat:
+    format_id: FormatId
+    video_id: str
+    duration_ms: int
+    mime_type: str
+    buffered_range: BufferedRange
+    requested_format: SABRFormat
+
 
 class SABRStream:
     def __init__(self, fd, server_abr_streaming_url: str, video_playback_ustreamer_config: str, po_token_fn: callable, formats: list[SABRFormat], client_info: ClientInfo):
@@ -37,6 +53,8 @@ class SABRStream:
         self.client_abr_state: ClientAbrState = None
 
         self.playback_cookie: PlaybackCookie = None
+
+        self.initialized_formats: dict[str, InitializedFormat] = {}
 
         self.fd: FileDownloader = fd
 
@@ -89,6 +107,7 @@ class SABRStream:
             )
 
             self.parse_ump_response(response)
+            break
 
     def write_ump_debug(self, part, message):
         #if traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'ump_debug', 0, {int_or_none}), get_all=False) == 1:
@@ -124,6 +143,45 @@ class SABRStream:
                     response.close()
                     self.report_error('SABRRedirect: Invalid redirect URL')
                     return False
+
+            elif part.part_type == UMPPartType.FORMAT_INITIALIZATION_METADATA:
+                fmt_init_metadata = protobug.loads(part.data, FormatInitializationMetadata)
+                self.write_ump_debug(part, f'Format Initialization Metadata: {fmt_init_metadata} Data: {part.get_b64_str()}')
+
+
+                initialized_format_key = get_format_key(fmt_init_metadata.format_id)
+
+                if initialized_format_key in self.initialized_formats:
+                    self.report_error('Format already initialized')
+                    return False
+                # find matching requested format key
+
+                matching_requested_format = next((format for format in self.requestedFormats if get_format_key(FormatId(itag=format.itag, last_modified=format.last_modified_at) ) == initialized_format_key), None)
+
+                if not matching_requested_format:
+                    self.write_ump_warning(part, f'Format {initialized_format_key} not in requested formats.. Ignoring')
+                    continue
+
+                initialized_format = InitializedFormat(
+                    format_id = fmt_init_metadata.format_id,
+                    duration_ms = fmt_init_metadata.duration_ms,
+                    mime_type = fmt_init_metadata.mime_type,
+                    buffered_range = BufferedRange(
+                        format_id = fmt_init_metadata.format_id,
+                        start_time_ms = 0,
+                        duration_ms = 0,
+                        start_segment_index = 0,
+                        end_segment_index = 0,
+                    ),
+                    video_id = fmt_init_metadata.video_id,
+                    requested_format=matching_requested_format
+                )
+
+                self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
+                continue
+            else:
+                self.write_ump_warning(part, f'Unhandled part type: {part.part_type.name} Data: {part.get_b64_str()}')
+                continue
 
 
 

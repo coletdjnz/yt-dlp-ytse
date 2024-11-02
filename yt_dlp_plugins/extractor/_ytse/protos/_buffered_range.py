@@ -54,12 +54,12 @@ class YPa:
 @protobug.message
 class BufferedRange:
     format_id: FormatId = protobug.field(1)
-    start_time_ms: protobug.Int64 = protobug.field(2)
-    duration_ms: protobug.Int64 = protobug.field(3)
-    start_segment_index: protobug.Int32 = protobug.field(4)
-    end_segment_index: protobug.Int32 = protobug.field(5)
-    time_range: TimeRange = protobug.field(6)
-    field9: Kob = protobug.field(9)
-    field11: YPa = protobug.field(11)
-    field12: YPa = protobug.field(12)
+    start_time_ms: typing.Optional[protobug.Int64] = protobug.field(2, default=None)
+    duration_ms: typing.Optional[protobug.Int64] = protobug.field(3, default=None)
+    start_segment_index: typing.Optional[protobug.Int32] = protobug.field(4, default=None)
+    end_segment_index: typing.Optional[protobug.Int32] = protobug.field(5, default=None)
+    time_range: typing.Optional[TimeRange] = protobug.field(6, default=None)
+    # field9: Kob = protobug.field(9)
+    # field11: YPa = protobug.field(11)
+    # field12: YPa = protobug.field(12)
 
