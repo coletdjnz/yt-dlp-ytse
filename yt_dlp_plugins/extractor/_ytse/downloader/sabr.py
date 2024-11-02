@@ -185,6 +185,9 @@ class SABRStream:
                     initialized_format.buffered_range.end_segment_index += 1
                     initialized_format.buffered_range.duration_ms += media_header.duration_ms
 
+                    if initialized_format.buffered_range.end_segment_index != sequence_number:
+                        self.write_ump_warning(part, f'End segment index mismatch: {initialized_format.buffered_range.end_segment_index} != {sequence_number}')
+
                 initialized_format.current_content_length += media_header.content_length
                 initialized_format.current_duration_ms += media_header.duration_ms or 0
 
