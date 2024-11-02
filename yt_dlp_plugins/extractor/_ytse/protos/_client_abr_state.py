@@ -3,59 +3,6 @@ import typing
 import protobug
 from._media_capabilities import MediaCapabilities
 
-"""
-message ClientAbrState {
-  optional int32 time_since_last_manual_format_selection_ms = 13;
-  optional int32 last_manual_direction = 14;
-  optional int32 quality = 16;
-  optional int32 detailed_network_type = 17;
-  optional int32 max_width = 18;
-  optional int32 max_height = 19;
-  optional int32 selected_quality_height = 21;
-  optional int32 r7 = 23;
-  optional int64 start_time_ms = 28;
-  optional int64 time_since_last_seek = 29;
-  optional int32 visibility = 34;
-  optional int64 time_since_last_req = 36;
-  optional MediaCapabilities media_capabilities = 38;
-  optional int64 time_since_last_action = 39;
-  // optional int32 Gw = 40;
-  optional MediaType media_type = 40;
-  optional int64 player_state = 44;
-  optional bool range_compression = 46;
-  optional int32 Jda = 48;
-  optional int32 qw = 50;
-  optional int32 Ky = 51;
-  optional int32 sabr_report_request_cancellation_info = 54;
-  optional bool l = 56;
-  optional int64 G7 = 57;
-  optional bool prefer_vp9 = 58;
-  optional int32 qj = 59;
-  optional int32 Hx = 60;
-  optional bool is_prefetch = 61;
-  optional int32 sabr_support_quality_constraints = 62;
-  optional bytes sabr_license_constraint = 63;
-  optional int32 allow_proxima_live_latency = 64;
-  optional int32 sabr_force_proxima = 66;
-  optional int32 Tqb = 67;
-  optional int64 sabr_force_max_network_interruption_duration_ms = 68;
-  optional float playback_rate = 285;
-
-  enum MediaType {
-    MEDIA_TYPE_DEFAULT = 0;
-    MEDIA_TYPE_AUDIO = 1;
-    MEDIA_TYPE_VIDEO = 2;
-    USE_SERVER_FORMAT_FILTER = 3;
-    UNKNOWN_4 = 4;
-    UNKNOWN_5 = 5;
-    UNKNOWN_6 = 6;
-    UNKNOWN_7 = 7;
-    UNKNOWN_8 = 8;
-    UNKNOWN_9 = 9;
-    UNKNOWN_10 = 10;
-  }
-}
-"""
 
 @protobug.message
 class ClientAbrState:
