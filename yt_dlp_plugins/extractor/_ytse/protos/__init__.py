@@ -8,3 +8,6 @@ from ._video_playback_abr_request import VideoPlaybackAbrRequest
 from ._playback_cookie import PlaybackCookie
 from ._format_initialization_metadata import FormatInitializationMetadata
 from ._next_request_policy import NextRequestPolicy
+from ._playback_start_policy import PlaybackStartPolicy
+from ._request_cancellation_policy import RequestCancellationPolicy
+from ._sabr_seek import SabrSeek

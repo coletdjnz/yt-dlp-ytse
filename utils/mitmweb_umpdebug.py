@@ -7,7 +7,7 @@ from yt_dlp.networking import Response
 
 from yt_dlp_plugins.extractor._ytse.downloader.sabr import UMPParser
 from yt_dlp_plugins.extractor._ytse.protos import MediaHeader, SabrRedirect, NextRequestPolicy, \
-    FormatInitializationMetadata, StreamProtectionStatus, VideoPlaybackAbrRequest
+    FormatInitializationMetadata, StreamProtectionStatus, VideoPlaybackAbrRequest, PlaybackStartPolicy, RequestCancellationPolicy, SabrSeek
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType
 
 
@@ -44,6 +44,19 @@ class UMPDecoder:
 
                     elif part.part_type == UMPPartType.STREAM_PROTECTION_STATUS:
                         f.write(f'Stream Protection Status: {protobug.loads(part.data, StreamProtectionStatus)}\n')
+
+                    elif part.part_type == UMPPartType.PLAYBACK_START_POLICY:
+                        f.write(f'Playback Start Policy: {protobug.loads(part.data, PlaybackStartPolicy)}\n')
+
+                    elif part.part_type == UMPPartType.REQUEST_CANCELLATION_POLICY:
+                        f.write(f'Request Cancellation Policy: {protobug.loads(part.data, RequestCancellationPolicy)}\n')
+
+                    elif part.part_type == UMPPartType.SABR_SEEK:
+                        f.write(f'Sabr Seek: {protobug.loads(part.data, SabrSeek)}\n')
+
+                    elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
+                        f.write(f'Media Header Id: {part.data[0]}\n')
+
 
 addons = [
     UMPDecoder()
