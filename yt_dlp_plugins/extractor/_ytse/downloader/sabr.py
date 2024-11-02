@@ -6,7 +6,7 @@ from yt_dlp import traverse_obj
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request
-from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect, FormatInitializationMetadata
+from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect, FormatInitializationMetadata, NextRequestPolicy
 from yt_dlp_plugins.extractor._ytse.protos._buffered_range import BufferedRange
 from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
 from yt_dlp_plugins.extractor._ytse.protos._streamer_context import StreamerContext, ClientInfo
@@ -81,6 +81,7 @@ class SABRStream:
            media_type=media_type,
         )
 
+        requests = 0
         while True:
             po_token = self.po_token_fn()
             vpabr = VideoPlaybackAbrRequest(
@@ -89,12 +90,12 @@ class SABRStream:
                 selected_audio_format_ids=selected_audio_format_ids,
                 selected_format_ids=[],
                 video_playback_ustreamer_config=base64.urlsafe_b64decode(self.video_playback_ustreamer_config),
-                streamer_context = StreamerContext(
-                     po_token = po_token and base64.urlsafe_b64decode(po_token),
-                     playback_cookie = self.playback_cookie and protobug.dumps(self.playback_cookie),
-                     client_info = self.client_info
+                streamer_context=StreamerContext(
+                     po_token=po_token and base64.urlsafe_b64decode(po_token),
+                     playback_cookie=self.playback_cookie and protobug.dumps(self.playback_cookie),
+                     client_info=self.client_info
                  ),
-                #buffered_ranges = [],
+                buffered_ranges=[initialized_format.buffered_range for initialized_format in self.initialized_formats.values()],
             )
             payload = protobug.dumps(vpabr)
 
@@ -107,7 +108,9 @@ class SABRStream:
             )
 
             self.parse_ump_response(response)
-            break
+            requests += 1
+            if requests == 2:
+                break
 
     def write_ump_debug(self, part, message):
         #if traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'ump_debug', 0, {int_or_none}), get_all=False) == 1:
@@ -178,6 +181,16 @@ class SABRStream:
                 )
 
                 self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
+                continue
+
+            elif part.part_type == UMPPartType.NEXT_REQUEST_POLICY:
+                self.write_ump_debug(part, f'Next Request Policy Data: {part.get_b64_str()}')
+                next_request_policy = protobug.loads(part.data, NextRequestPolicy)
+
+                playback_cookie = next_request_policy.playback_cookie
+                if playback_cookie:
+                    self.playback_cookie = playback_cookie
+                    self.write_ump_debug(part, f'Playback Cookie: {playback_cookie}')
                 continue
             else:
                 self.write_ump_warning(part, f'Unhandled part type: {part.part_type.name} Data: {part.get_b64_str()}')
@@ -260,5 +273,3 @@ class SABRFD(FileDownloader):
 
         stream = SABRStream(self, server_abr_streaming_url, video_playback_ustreamer_config, po_token_fn, formats, client_info)
         stream.download()
-
-

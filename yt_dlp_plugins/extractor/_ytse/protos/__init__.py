@@ -7,3 +7,4 @@ from ._media_capabilities import MediaCapabilities, VideoFormatCapability, Audio
 from ._video_playback_abr_request import VideoPlaybackAbrRequest
 from ._playback_cookie import PlaybackCookie
 from ._format_initialization_metadata import FormatInitializationMetadata
+from ._next_request_policy import NextRequestPolicy
