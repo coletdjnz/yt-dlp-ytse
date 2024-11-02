@@ -123,9 +123,10 @@ class SABRStream:
 
             response = self.fd.ydl.urlopen(
                 Request(
-                    url = self.server_abr_streaming_url,
+                    url=self.server_abr_streaming_url,
                     method='POST',
                     data=payload,
+                    query={'rn': request_number},
                 )
             )
 
