@@ -27,4 +27,5 @@ class MediaHeader:
     format_id: typing.Optional[FormatId] = protobug.field(13, default=None)
     content_length: typing.Optional[protobug.Int64] = protobug.field(14, default=None)
     time_range: typing.Optional[TimeRange] = protobug.field(15, default=None)
+    unknown_field_16: typing.Optional[protobug.Int32] = protobug.field(16, default=None)
 

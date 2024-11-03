@@ -11,3 +11,5 @@ from ._next_request_policy import NextRequestPolicy
 from ._playback_start_policy import PlaybackStartPolicy
 from ._request_cancellation_policy import RequestCancellationPolicy
 from ._sabr_seek import SabrSeek
+from ._live_metadata import LiveMetadata
+

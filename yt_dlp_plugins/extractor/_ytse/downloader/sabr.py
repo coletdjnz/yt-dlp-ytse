@@ -66,7 +66,7 @@ class SABRStream:
 
         self.client_abr_state: ClientAbrState = None
 
-        self.playback_cookie: PlaybackCookie = None
+        self.next_request_policy: NextRequestPolicy = None
 
         self.initialized_formats: dict[str, InitializedFormat] = {}
         self.header_id_to_format_map: dict[int, str] = {}
@@ -112,7 +112,7 @@ class SABRStream:
                 video_playback_ustreamer_config=base64.urlsafe_b64decode(self.video_playback_ustreamer_config),
                 streamer_context=StreamerContext(
                      po_token=po_token and base64.urlsafe_b64decode(po_token),
-                     playback_cookie=self.playback_cookie and protobug.dumps(self.playback_cookie),
+                     playback_cookie=self.next_request_policy and protobug.dumps(self.next_request_policy.playback_cookie),
                      client_info=self.client_info
                  ),
                 buffered_ranges=[initialized_format.buffered_range for initialized_format in self.initialized_formats.values()],
@@ -132,16 +132,22 @@ class SABRStream:
 
             self.parse_ump_response(response)
 
-            # first_format = list(self.initialized_formats.values())[0]
-            # find format with smallest current_duration_ms
-            first_format = min(self.initialized_formats.values(), key=lambda x: x.current_duration_ms)
-            self.client_abr_state.start_time_ms = first_format.current_duration_ms
+            format_min_duration = min(self.initialized_formats.values(), key=lambda x: x.current_duration_ms)
+
+            # next request policy backoff_time_ms is the minimum to increment start_time_ms by
+            self.client_abr_state.start_time_ms = max(
+                format_min_duration.current_duration_ms or 0,
+                self.client_abr_state.start_time_ms + ((self.next_request_policy and self.next_request_policy.backoff_time_ms) or 0)
+            )
+
             if not self.total_duration_ms:
-                self.total_duration_ms = first_format.total_duration_ms
+                self.total_duration_ms = format_min_duration.total_duration_ms
 
             if len(self.header_id_to_format_map):
                 self.fd.report_warning('Extraneous header IDs left')
                 self.header_id_to_format_map.clear()
+
+            self.next_request_policy = None
 
             request_number += 1
 
@@ -201,7 +207,7 @@ class SABRStream:
             start_data_range=media_header.start_data_range,
             sequence_number=sequence_number,
             content_length=media_header.content_length,
-            start_ms=media_header.start_ms
+            start_ms=media_header.start_ms,
         )
 
         self.header_id_to_format_map[media_header.header_id] = get_format_key(media_header.format_id)
@@ -286,7 +292,7 @@ class SABRStream:
                 end_segment_index=0,
             ),
             video_id=fmt_init_metadata.video_id,
-            requested_format=matching_requested_format
+            requested_format=matching_requested_format,
         )
 
         self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
@@ -296,12 +302,7 @@ class SABRStream:
 
     def process_next_request_policy(self, part: UMPPart):
         self.write_ump_debug(part, f'Next Request Policy Data: {part.get_b64_str()}')
-        next_request_policy = protobug.loads(part.data, NextRequestPolicy)
-
-        playback_cookie = next_request_policy.playback_cookie
-        if playback_cookie:
-            self.playback_cookie = playback_cookie
-            self.write_ump_debug(part, f'Playback Cookie: {playback_cookie}')
+        self.next_request_policy = protobug.loads(part.data, NextRequestPolicy)
 
 
 class SABRFD(FileDownloader):
