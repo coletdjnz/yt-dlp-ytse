@@ -1,12 +1,13 @@
 import base64
 import dataclasses
 import enum
+import time
 import protobug
-from yt_dlp import traverse_obj
+from yt_dlp import traverse_obj, int_or_none
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request
-from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect, FormatInitializationMetadata, NextRequestPolicy
+from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect, FormatInitializationMetadata, NextRequestPolicy, LiveMetadata, SabrSeek, SabrError
 from yt_dlp_plugins.extractor._ytse.protos._buffered_range import BufferedRange
 from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
 from yt_dlp_plugins.extractor._ytse.protos._streamer_context import StreamerContext, ClientInfo
@@ -70,6 +71,7 @@ class SABRStream:
 
         self.initialized_formats: dict[str, InitializedFormat] = {}
         self.header_id_to_format_map: dict[int, str] = {}
+        self.live_metadata: LiveMetadata = None
 
         self.fd: FileDownloader = fd
 
@@ -100,7 +102,7 @@ class SABRStream:
 
         request_number = 0
         # add a small buffer to account for small difference in format length
-        while (not self.total_duration_ms) or self.client_abr_state.start_time_ms + 100 < self.total_duration_ms:
+        while self.live_metadata or not self.total_duration_ms or self.client_abr_state.start_time_ms + 100 < self.total_duration_ms:
             po_token = self.po_token_fn()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self.client_abr_state,
@@ -132,20 +134,25 @@ class SABRStream:
 
             self.parse_ump_response(response)
 
-            format_min_duration = min(self.initialized_formats.values(), key=lambda x: x.current_duration_ms)
+            ivs = list(self.initialized_formats.values())
+
+            format_min_duration = ivs and min(self.initialized_formats.values(), key=lambda x: x.current_duration_ms)
 
             # next request policy backoff_time_ms is the minimum to increment start_time_ms by
             self.client_abr_state.start_time_ms = max(
-                format_min_duration.current_duration_ms or 0,
+                (format_min_duration and format_min_duration.current_duration_ms) or 0,
                 self.client_abr_state.start_time_ms + ((self.next_request_policy and self.next_request_policy.backoff_time_ms) or 0)
             )
-
-            if not self.total_duration_ms:
-                self.total_duration_ms = format_min_duration.total_duration_ms
 
             if len(self.header_id_to_format_map):
                 self.fd.report_warning('Extraneous header IDs left')
                 self.header_id_to_format_map.clear()
+
+            if self.live_metadata and self.client_abr_state.start_time_ms >= self.total_duration_ms:
+                self.client_abr_state.start_time_ms = self.total_duration_ms
+                wait_time = ((self.next_request_policy and self.next_request_policy.backoff_time_ms) or 0) or (self.live_metadata.target_duration_sec * 1000 * 2)
+                self.fd.write_debug(f'sleeping {wait_time / 1000} seconds')
+                time.sleep(wait_time / 1000)
 
             self.next_request_policy = None
 
@@ -178,6 +185,12 @@ class SABRStream:
                 self.process_format_initialization_metadata(part)
             elif part.part_type == UMPPartType.NEXT_REQUEST_POLICY:
                 self.process_next_request_policy(part)
+            elif part.part_type == UMPPartType.LIVE_METADATA:
+                self.process_live_metadata(part)
+            elif part.part_type == UMPPartType.SABR_SEEK:
+                self.process_sabr_seek(part)
+            elif part.part_type == UMPPartType.SABR_ERROR:
+                self.process_sabr_error(part)
             else:
                 self.write_ump_warning(part, f'Unhandled part type: {part.part_type.name}:{part.part_id} Data: {part.get_b64_str()}')
                 continue
@@ -200,10 +213,14 @@ class SABRStream:
 
         is_init_segment = media_header.is_init_segment
 
+        duration_ms = media_header.duration_ms or 0
+        if self.live_metadata and not duration_ms:
+            duration_ms = self.live_metadata.target_duration_sec * 1000
+
         initialized_format.sequences[sequence_number or 0] = Sequence(
             format_id=media_header.format_id,
             is_init_segment=is_init_segment,
-            duration_ms=media_header.duration_ms,
+            duration_ms=duration_ms,
             start_data_range=media_header.start_data_range,
             sequence_number=sequence_number,
             content_length=media_header.content_length,
@@ -212,15 +229,18 @@ class SABRStream:
 
         self.header_id_to_format_map[media_header.header_id] = get_format_key(media_header.format_id)
 
-        if not is_init_segment:
-            initialized_format.buffered_range.end_segment_index += 1
-            initialized_format.buffered_range.duration_ms += media_header.duration_ms
+        if not is_init_segment and sequence_number != 0:
 
-            if initialized_format.buffered_range.end_segment_index != sequence_number:
-                self.write_ump_warning(part, f'End segment index mismatch: {initialized_format.buffered_range.end_segment_index} != {sequence_number}')
+            if initialized_format.buffered_range.end_segment_index + 1 != sequence_number:
+                self.write_ump_warning(part, f'End segment index mismatch: {initialized_format.buffered_range.end_segment_index + 1} != {sequence_number}. Jumping to {sequence_number}.')
 
-        initialized_format.current_content_length += media_header.content_length
-        initialized_format.current_duration_ms += media_header.duration_ms or 0
+            initialized_format.buffered_range.end_segment_index = sequence_number
+            initialized_format.buffered_range.duration_ms += duration_ms
+
+        content_length = media_header.content_length
+        if content_length:
+            initialized_format.current_content_length = content_length
+        initialized_format.current_duration_ms += duration_ms or 0
 
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
@@ -247,6 +267,12 @@ class SABRStream:
         header_id = part.data[0]
         self.write_ump_debug(part, f' Header ID: {header_id}')
         self.header_id_to_format_map.pop(header_id, None)
+
+    def process_live_metadata(self, part: UMPPart):
+        self.live_metadata = protobug.loads(part.data, LiveMetadata)
+        self.write_ump_debug(part, f'Live Metadata: {self.live_metadata} Data: {part.get_b64_str()}')
+        if self.live_metadata.latest_sequence_duration_ms:
+            self.total_duration_ms = self.live_metadata.latest_sequence_duration_ms
 
     def process_stream_protection_status(self, part: UMPPart):
         sps = protobug.loads(part.data, StreamProtectionStatus)
@@ -295,14 +321,33 @@ class SABRStream:
             requested_format=matching_requested_format,
         )
 
+        self.total_duration_ms = max(self.total_duration_ms or 0, fmt_init_metadata.duration_ms or 0)
+
         self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
 
         self.write_ump_debug(part, f'Initialized Format: {initialized_format}')\
 
 
     def process_next_request_policy(self, part: UMPPart):
-        self.write_ump_debug(part, f'Next Request Policy Data: {part.get_b64_str()}')
         self.next_request_policy = protobug.loads(part.data, NextRequestPolicy)
+        self.write_ump_debug(part, f'Next Request Policy: {self.next_request_policy} Data: {part.get_b64_str()}')
+
+    def process_sabr_seek(self, part: UMPPart):
+        sabr_seek = protobug.loads(part.data, SabrSeek)
+        seek_to = (sabr_seek.start / sabr_seek.timescale) * 1000
+        self.write_ump_debug(part, f'Sabr Seek: {sabr_seek} Data: {part.get_b64_str()}')
+        self.write_ump_debug(part, f'Seeking to {seek_to}ms')
+
+        for initialized_format in self.initialized_formats.values():
+            initialized_format.buffered_range.start_time_ms = int(seek_to)
+            initialized_format.buffered_range.duration_ms = 0
+            initialized_format.current_content_length = 0
+            initialized_format.current_duration_ms = int(seek_to)
+            initialized_format.sequences.clear()
+
+    def process_sabr_error(self, part: UMPPart):
+        sabr_error = protobug.loads(part.data, SabrError)
+        self.fd.report_error(f'SABR Error: {sabr_error} Data: {part.get_b64_str()}')
 
 
 class SABRFD(FileDownloader):
@@ -394,7 +439,7 @@ class SABRFD(FileDownloader):
 
             formats.append(SABRFormat(
                 itag = int(sabr_config['itag']),
-                last_modified_at = int(sabr_config.get('last_modified')),
+                last_modified_at = int_or_none(sabr_config.get('last_modified')),
                 format_type = FormatType.VIDEO if format.get('acodec') == 'none' else FormatType.AUDIO,
                 quality=None,
                 height=None,
