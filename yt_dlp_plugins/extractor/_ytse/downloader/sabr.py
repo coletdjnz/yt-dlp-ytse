@@ -333,6 +333,7 @@ class SABRStream:
                 duration_ms=0,
                 start_segment_index=0,
                 end_segment_index=0,
+                # todo: also use time range for ios? perhaps will avoid duplicate segments..
             ),
             video_id=fmt_init_metadata.video_id,
             requested_format=matching_requested_format,
