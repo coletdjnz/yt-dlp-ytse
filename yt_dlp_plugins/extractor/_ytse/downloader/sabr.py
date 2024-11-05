@@ -3,7 +3,7 @@ import dataclasses
 import enum
 import time
 import protobug
-from yt_dlp import traverse_obj, int_or_none
+from yt_dlp import traverse_obj, int_or_none, DownloadError
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request
@@ -51,6 +51,7 @@ class InitializedFormat:
     buffered_range: BufferedRange
     requested_format: SABRFormat
     total_duration_ms: int = 0
+    end_time_ms: int = 0
     current_content_length: int = 0
     current_duration_ms: int = 0
     mime_type: str = None
@@ -141,7 +142,8 @@ class SABRStream:
             # next request policy backoff_time_ms is the minimum to increment start_time_ms by
             self.client_abr_state.start_time_ms = max(
                 (format_min_duration and format_min_duration.current_duration_ms) or 0,
-                self.client_abr_state.start_time_ms + ((self.next_request_policy and self.next_request_policy.backoff_time_ms) or 0)
+                self.client_abr_state.start_time_ms + ((self.next_request_policy and self.next_request_policy.backoff_time_ms) or 0),
+                self.client_abr_state.start_time_ms + 1000
             )
 
             if len(self.header_id_to_format_map):
@@ -157,6 +159,8 @@ class SABRStream:
             self.next_request_policy = None
 
             request_number += 1
+
+            self.fd.write_debug(f'{self.client_abr_state.start_time_ms}/{self.total_duration_ms}')
 
         for initialized_format in self.initialized_formats.values():
             initialized_format.requested_format.write_callback(b'', close=True)
@@ -191,6 +195,8 @@ class SABRStream:
                 self.process_sabr_seek(part)
             elif part.part_type == UMPPartType.SABR_ERROR:
                 self.process_sabr_error(part)
+            elif part.part_type == UMPPartType.SELECTABLE_FORMATS:
+                self.process_selectable_formats(part)
             else:
                 self.write_ump_warning(part, f'Unhandled part type: {part.part_type.name}:{part.part_id} Data: {part.get_b64_str()}')
                 continue
@@ -213,9 +219,15 @@ class SABRStream:
 
         is_init_segment = media_header.is_init_segment
 
-        duration_ms = media_header.duration_ms or 0
+        # duration_ms may not be provided - instead time_range is given (ios)
+        duration_ms = (
+                media_header.duration_ms
+                or (media_header.time_range and int((media_header.time_range.duration / media_header.time_range.timescale) * 1000))
+                or 0)
         if self.live_metadata and not duration_ms:
             duration_ms = self.live_metadata.target_duration_sec * 1000
+
+
 
         initialized_format.sequences[sequence_number or 0] = Sequence(
             format_id=media_header.format_id,
@@ -289,6 +301,10 @@ class SABRStream:
         if not self.server_abr_streaming_url:
             self.fd.report_error('SABRRedirect: Invalid redirect URL')
 
+    def process_selectable_formats(self, part: UMPPart):
+        # shown on IOS. Shows available formats. Probably not very useful?
+        self.write_ump_debug(part, f'Selectable Formats: {part.get_b64_str()}')
+
     def process_format_initialization_metadata(self, part: UMPPart):
         fmt_init_metadata = protobug.loads(part.data, FormatInitializationMetadata)
         self.write_ump_debug(part, f'Format Initialization Metadata: {fmt_init_metadata} Data: {part.get_b64_str()}')
@@ -309,6 +325,7 @@ class SABRStream:
         initialized_format = InitializedFormat(
             format_id=fmt_init_metadata.format_id,
             total_duration_ms=fmt_init_metadata.duration_ms,
+            end_time_ms=fmt_init_metadata.end_time_ms,
             mime_type=fmt_init_metadata.mime_type,
             buffered_range=BufferedRange(
                 format_id=fmt_init_metadata.format_id,
@@ -320,8 +337,8 @@ class SABRStream:
             video_id=fmt_init_metadata.video_id,
             requested_format=matching_requested_format,
         )
-
-        self.total_duration_ms = max(self.total_duration_ms or 0, fmt_init_metadata.duration_ms or 0)
+         # fmt total_duration_ms may be inaccurate - end_time_ms is usually accurate though? (ios)
+        self.total_duration_ms = max(self.total_duration_ms or 0, fmt_init_metadata.end_time_ms or 0)
 
         self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
 
