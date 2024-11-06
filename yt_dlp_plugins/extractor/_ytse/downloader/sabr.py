@@ -324,7 +324,7 @@ class SABRStream:
 
         initialized_format = InitializedFormat(
             format_id=fmt_init_metadata.format_id,
-            total_duration_ms=fmt_init_metadata.duration_ms,
+            total_duration_ms=int((fmt_init_metadata.duration / fmt_init_metadata.duration_timescale) * 1000),
             end_time_ms=fmt_init_metadata.end_time_ms,
             mime_type=fmt_init_metadata.mime_type,
             buffered_range=BufferedRange(

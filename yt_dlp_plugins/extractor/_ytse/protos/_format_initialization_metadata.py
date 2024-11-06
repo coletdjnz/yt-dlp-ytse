@@ -77,5 +77,5 @@ class FormatInitializationMetadata:
     init_range: typing.Optional[InitRange] = protobug.field(6, default=None)
     index_range: typing.Optional[IndexRange] = protobug.field(7, default=None)
     format: typing.Optional[Format] = protobug.field(8, default=None)
-    duration_ms: typing.Optional[protobug.Int32] = protobug.field(9, default=None)
-    field10: typing.Optional[protobug.Int32] = protobug.field(10, default=None)
+    duration: typing.Optional[protobug.Int32] = protobug.field(9, default=None)
+    duration_timescale: typing.Optional[protobug.Int32] = protobug.field(10, default=None)
