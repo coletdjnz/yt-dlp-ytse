@@ -60,7 +60,7 @@ class InitializedFormat:
 
 
 class SABRStream:
-    def __init__(self, fd, server_abr_streaming_url: str, video_playback_ustreamer_config: str, po_token_fn: callable, formats: list[SABRFormat], client_info: ClientInfo):
+    def __init__(self, fd, server_abr_streaming_url: str, video_playback_ustreamer_config: str, po_token_fn: callable, formats: list[SABRFormat], client_info: ClientInfo, live_segment_target_duration_sec: int = 5):
         self.server_abr_streaming_url = server_abr_streaming_url
         self.video_playback_ustreamer_config = video_playback_ustreamer_config
         self.po_token_fn = po_token_fn
@@ -80,6 +80,7 @@ class SABRStream:
         self.total_duration_ms = None
 
         self.sabr_seeked = False
+        self.live_segment_target_duration_sec = live_segment_target_duration_sec
 
     def download(self):
         video_formats = [format for format in self.requestedFormats if format.format_type == FormatType.VIDEO]
@@ -151,17 +152,15 @@ class SABRStream:
                 min_buffered_duration_ms,
                 # next request policy backoff_time_ms is the minimum to increment start_time_ms by
                 self.client_abr_state.start_time_ms + next_request_backoff_ms,
-             #   self.client_abr_state.start_time_ms + 1000  # guard, always increment by at least 1 second
             )
 
             if self.live_metadata and self.client_abr_state.start_time_ms >= self.total_duration_ms:
                 self.client_abr_state.start_time_ms = self.total_duration_ms
-                wait_time = next_request_backoff_ms or (self.live_metadata.target_duration_sec * 1000 * 2)  # lets wait a couple segments worth of time
+                wait_time = next_request_backoff_ms + self.live_segment_target_duration_sec * 1000
                 self.fd.write_debug(f'sleeping {wait_time / 1000} seconds')
                 time.sleep(wait_time / 1000)
 
-            # reset live_metadata in case yt stops sending it...
-            self.next_request_policy = self.live_metadata = None
+            self.next_request_policy = None
             self.sabr_seeked = False
 
             request_number += 1
@@ -235,13 +234,15 @@ class SABRStream:
         # Calculate duration of this segment
         # For videos, either duration_ms or time_range should be present
         # For live streams, calculate segment duration based on live metadata target segment duration
+
+
+        start_ms = media_header.start_ms or (time_range and time_range.get_start_ms()) or 0
+
         duration_ms = (
             media_header.duration_ms
             or (time_range and time_range.get_duration_ms())
-            or self.live_metadata and self.live_metadata.target_duration_sec * 1000
+            or self.live_metadata and self.live_segment_target_duration_sec * 1000
             or 0)
-
-        start_ms = media_header.start_ms or (time_range and time_range.get_start_ms()) or 0
 
         initialized_format.sequences[sequence_number or 0] = Sequence(
             format_id=media_header.format_id,
@@ -282,11 +283,20 @@ class SABRStream:
 
             current_buffered_range.end_segment_index = sequence_number
 
-            # We need to increment both duration_ms and time_range.duration
-            current_buffered_range.duration_ms += duration_ms
-            if current_buffered_range.time_range.timescale != 1000:
-                raise DownloadError(f'Timescale not 1000 in buffered range time_range: {current_buffered_range}')
-            current_buffered_range.time_range.duration += duration_ms
+            if not self.live_metadata:
+                # We need to increment both duration_ms and time_range.duration
+                current_buffered_range.duration_ms += duration_ms
+                current_buffered_range.time_range.duration += duration_ms
+            else:
+                # Attempt to keep in sync with livestream, as the segment duration target is not always perfect.
+                # The server seems to care more about the segment index than the duration.
+                if current_buffered_range.start_time_ms > start_ms:
+                    raise DownloadError(f'Buffered range start time mismatch: {current_buffered_range.start_time_ms} > {start_ms}')
+                current_buffered_range.duration_ms = current_buffered_range.time_range.duration = start_ms + duration_ms
+
+                if not current_buffered_range.duration_ms - duration_ms == start_ms:
+                    raise DownloadError(f'Buffered range duration mismatch: {current_buffered_range.duration_ms - duration_ms} != {start_ms}')
+
 
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
@@ -324,7 +334,7 @@ class SABRStream:
         sps = protobug.loads(part.data, StreamProtectionStatus)
         self.write_ump_debug(part, f'Status: {StreamProtectionStatus.Status(sps.status).name} Data: {part.get_b64_str()}')
         if sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
-            self.fd.report_error('StreamProtectionStatus: Attestation Required (missing PO Token?)')
+            raise DownloadError('StreamProtectionStatus: Attestation Required (missing PO Token?)')
 
     def process_sabr_redirect(self, part: UMPPart):
         sabr_redirect = protobug.loads(part.data, SabrRedirect)
@@ -408,7 +418,12 @@ class SABRFD(FileDownloader):
 
         # assuming we have only selected audio + video, and they are of the same client, for now.
 
-        requested_formats = info_dict['requested_formats']
+        requested_formats = info_dict.get('requested_formats')
+
+        if not requested_formats:
+            requested_formats = [info_dict]
+            info_dict['filepath'] = filename
+
 
         formats = []
         po_token_fn = lambda: None

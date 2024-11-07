@@ -79,6 +79,7 @@ class UMPDecoder:
 
                     elif part.part_type == UMPPartType.LIVE_METADATA:
                         f.write(f'Live Metadata: {protobug.loads(part.data, LiveMetadata)}\n')
+                        p.write(f'Live Metadata: {protobug.loads(part.data, LiveMetadata)}\n')
 
                     elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
                         f.write(f'Media Header Id: {part.data[0]}\n')

@@ -26,7 +26,7 @@ def get_suitable_downloader(info_dict, params={}, default=NO_DEFAULT, protocol=N
     if set(downloaders) == {SABRFD} and SABRFD.can_download(info_copy):
         return SABRFD
 
-    return get_suitable_downloader_original(info_dict, protocol, params, default)
+    return get_suitable_downloader_original(info_dict, params, default, protocol, to_stdout)
 
 
 sys.modules.get('yt_dlp.downloader').get_suitable_downloader = get_suitable_downloader
