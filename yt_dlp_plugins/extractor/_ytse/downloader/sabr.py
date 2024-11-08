@@ -91,6 +91,7 @@ class SABRStream:
 
         self.sabr_seeked = False
         self.live_segment_target_duration_sec = live_segment_target_duration_sec
+        self._request_had_data = False
 
     def download(self):
         video_formats = [format for format in self.requestedFormats if format.format_type == FormatType.VIDEO]
@@ -109,6 +110,8 @@ class SABRStream:
             start_time_ms=0,  # current duration
             media_type=media_type,
         )
+
+        requests_no_data = 0
 
         request_number = 0
         while self.live_metadata or not self.total_duration_ms or self.client_abr_state.start_time_ms < self.total_duration_ms:
@@ -151,10 +154,19 @@ class SABRStream:
                 self.fd.report_warning('Extraneous header IDs left')
                 self.header_ids.clear()
 
+            if not self._request_had_data:
+                if requests_no_data >= 2:
+                    if self.client_abr_state.start_time_ms < self.total_duration_ms:
+                        raise DownloadError('No data found in three consecutive requests')
+                    break  # stream finished?
+                requests_no_data += 1
+
             current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self.initialized_formats.values() if initialized_format.buffered_ranges]
 
             # choose format that is the most behind
-            min_buffered_duration_ms = min(current_buffered_ranges, key=lambda x: x.duration_ms).duration_ms if current_buffered_ranges else 0
+            lowest_buffered_range = min(current_buffered_ranges, key=lambda x: x.start_time_ms + x.duration_ms) if current_buffered_ranges else None
+
+            min_buffered_duration_ms = lowest_buffered_range.start_time_ms + lowest_buffered_range.duration_ms if lowest_buffered_range else 0
 
             next_request_backoff_ms = (self.next_request_policy and self.next_request_policy.backoff_time_ms) or 0
 
@@ -172,6 +184,7 @@ class SABRStream:
 
             self.next_request_policy = None
             self.sabr_seeked = False
+            self._request_had_data = False
 
             request_number += 1
 
@@ -301,10 +314,8 @@ class SABRStream:
                 # The server seems to care more about the segment index than the duration.
                 if current_buffered_range.start_time_ms > start_ms:
                     raise DownloadError(f'Buffered range start time mismatch: {current_buffered_range.start_time_ms} > {start_ms}')
-                current_buffered_range.duration_ms = current_buffered_range.time_range.duration = start_ms + duration_ms
-
-                if not current_buffered_range.duration_ms - duration_ms == start_ms:
-                    raise DownloadError(f'Buffered range duration mismatch: {current_buffered_range.duration_ms - duration_ms} != {start_ms}')
+                new_duration = (start_ms - current_buffered_range.start_time_ms) + duration_ms
+                current_buffered_range.duration_ms = current_buffered_range.time_range.duration = new_duration
 
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
@@ -323,6 +334,7 @@ class SABRStream:
         # todo: improve write callback
         write_callback = initialized_format.requested_format.write_callback
         write_callback(part.data[1:], SABRStatus(fragment_index=current_sequence.sequence_number, fragment_count=self.live_metadata and self.live_metadata.latest_sequence_number))
+        self._request_had_data = True
 
     def process_media_end(self, part: UMPPart):
         header_id = part.data[0]
