@@ -323,6 +323,10 @@ class SABRStream:
 
         current_sequence = self.header_ids.get(header_id)
 
+        if not current_sequence:
+            self.write_ump_warning(part, f'Header ID {header_id} not found')
+            return
+
         initialized_format = current_sequence.initialized_format
 
         if not initialized_format:
@@ -383,7 +387,7 @@ class SABRStream:
             self.write_ump_warning(part, f'Format {initialized_format_key} not in requested formats.. Ignoring')
             return
 
-        duration_ms = fmt_init_metadata.duration and ((fmt_init_metadata.duration // fmt_init_metadata.duration_timescale) * 1000)
+        duration_ms = fmt_init_metadata.duration and math.ceil((fmt_init_metadata.duration / fmt_init_metadata.duration_timescale) * 1000)
 
         initialized_format = InitializedFormat(
             format_id=fmt_init_metadata.format_id,
