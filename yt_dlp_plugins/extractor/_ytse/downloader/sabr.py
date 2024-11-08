@@ -133,7 +133,7 @@ class SABRStream:
             )
             payload = protobug.dumps(vpabr)
 
-           # self.fd.write_debug(f'Requested video playback abr request. {vpabr}')
+            self.fd.write_debug(f'Requested video playback abr request. {vpabr}')
 
             response = self.fd.ydl.urlopen(
                 Request(
@@ -288,7 +288,7 @@ class SABRStream:
 
             end_segment_index = current_buffered_range.end_segment_index or 0
             if end_segment_index != 0 and end_segment_index + 1 != sequence_number:
-                raise DownloadError(part, f'End segment index mismatch: {end_segment_index + 1} != {sequence_number}. Buffered Range: {current_buffered_range}')
+                raise DownloadError(f'End segment index mismatch: {end_segment_index + 1} != {sequence_number}. Buffered Range: {current_buffered_range}')
 
             current_buffered_range.end_segment_index = sequence_number
 
