@@ -3,12 +3,14 @@ import dataclasses
 import enum
 import math
 import time
+import typing
 from typing import List
 import protobug
 from yt_dlp import traverse_obj, int_or_none, DownloadError
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request
+from yt_dlp.utils.progress import ProgressCalculator
 from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect, FormatInitializationMetadata, NextRequestPolicy, LiveMetadata, SabrSeek, SabrError
 from yt_dlp_plugins.extractor._ytse.protos._buffered_range import BufferedRange
 from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
@@ -27,13 +29,20 @@ def get_format_key(format_id: FormatId):
 
 
 @dataclasses.dataclass
+class SABRStatus:
+    start_bytes: int = 0
+    fragment_index: int = None
+    fragment_count: int = None
+
+@dataclasses.dataclass
 class SABRFormat:
     itag: int
+    xtags: str
     last_modified_at: int
     format_type: FormatType
     quality: str
     height: str
-    write_callback: callable
+    write_callback: typing.Callable[[bytes, SABRStatus], None]
 
 
 @dataclasses.dataclass
@@ -45,6 +54,7 @@ class Sequence:
     start_data_range: int = 0
     sequence_number: int = 0
     content_length: int = 0
+    initialized_format: 'InitializedFormat' = None
 
 
 @dataclasses.dataclass
@@ -72,7 +82,7 @@ class SABRStream:
         self.next_request_policy: NextRequestPolicy = None
 
         self.initialized_formats: dict[str, InitializedFormat] = {}
-        self.header_id_to_format_map: dict[int, str] = {}
+        self.header_ids: dict[int, Sequence] = {}
         self.live_metadata: LiveMetadata = None
 
         self.fd: FileDownloader = fd
@@ -123,7 +133,7 @@ class SABRStream:
             )
             payload = protobug.dumps(vpabr)
 
-            self.fd.write_debug(f'Requested video playback abr request. {vpabr}')
+           # self.fd.write_debug(f'Requested video playback abr request. {vpabr}')
 
             response = self.fd.ydl.urlopen(
                 Request(
@@ -137,9 +147,9 @@ class SABRStream:
 
             self.parse_ump_response(response)
 
-            if len(self.header_id_to_format_map):
+            if len(self.header_ids):
                 self.fd.report_warning('Extraneous header IDs left')
-                self.header_id_to_format_map.clear()
+                self.header_ids.clear()
 
             current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self.initialized_formats.values() if initialized_format.buffered_ranges]
 
@@ -165,22 +175,20 @@ class SABRStream:
 
             request_number += 1
 
-            self.fd.write_debug(f'Progress: {self.client_abr_state.start_time_ms}/{self.total_duration_ms}')
+          #  self.fd.write_debug(f'Progress: {self.client_abr_state.start_time_ms}/{self.total_duration_ms}')
 
             # The response should automatically close when all data is read, but just in case...
             if not response.closed:
                 response.close()
 
-        # todo: improve callback
-        for initialized_format in self.initialized_formats.values():
-            initialized_format.requested_format.write_callback(b'', close=True)
-
     def write_ump_debug(self, part, message):
+        pass
         #if traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'ump_debug', 0, {int_or_none}), get_all=False) == 1:
         self.fd.write_debug(f'[{part.part_type.name}]: (Size {part.size}) {message}')
 
     def write_ump_warning(self, part, message):
-        self.fd.report_warning(f'[{part.part_type.name}]: (Size {part.size}) {message}')
+        pass
+        self.fd.write_debug(f'[{part.part_type.name}]: (Size {part.size}) {message}')
 
     def parse_ump_response(self, response):
         ump = UMPParser(response)
@@ -252,9 +260,10 @@ class SABRStream:
             sequence_number=sequence_number,
             content_length=media_header.content_length,
             start_ms=start_ms,
+            initialized_format=initialized_format
         )
 
-        self.header_id_to_format_map[media_header.header_id] = get_format_key(media_header.format_id)
+        self.header_ids[media_header.header_id] = initialized_format.sequences[sequence_number or 0]
 
         if not is_init_segment:
             current_buffered_range = initialized_format.buffered_ranges[-1] if initialized_format.buffered_ranges else None
@@ -297,17 +306,13 @@ class SABRStream:
                 if not current_buffered_range.duration_ms - duration_ms == start_ms:
                     raise DownloadError(f'Buffered range duration mismatch: {current_buffered_range.duration_ms - duration_ms} != {start_ms}')
 
-
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
         # self.write_ump_debug(part, f'Header ID: {header_id}')
 
-        format_key = self.header_id_to_format_map.get(header_id)
-        if not format_key:
-            #self.write_ump_warning(part, f'Initialized Format not found for header ID {header_id}')
-            return
+        current_sequence = self.header_ids.get(header_id)
 
-        initialized_format = self.initialized_formats.get(format_key)
+        initialized_format = current_sequence.initialized_format
 
         if not initialized_format:
             self.write_ump_warning(part, f'Initialized Format not found for header ID {header_id}')
@@ -317,12 +322,12 @@ class SABRStream:
 
         # todo: improve write callback
         write_callback = initialized_format.requested_format.write_callback
-        write_callback(part.data[1:])
+        write_callback(part.data[1:], SABRStatus(fragment_index=current_sequence.sequence_number, fragment_count=self.live_metadata and self.live_metadata.latest_sequence_number))
 
     def process_media_end(self, part: UMPPart):
         header_id = part.data[0]
         self.write_ump_debug(part, f' Header ID: {header_id}')
-        self.header_id_to_format_map.pop(header_id, None)
+        self.header_ids.pop(header_id, None)
 
     def process_live_metadata(self, part: UMPPart):
         self.live_metadata = protobug.loads(part.data, LiveMetadata)
@@ -401,6 +406,62 @@ class SABRStream:
         raise DownloadError(f'SABR Error: {sabr_error} Data: {part.get_b64_str()}')
 
 
+class SABRFDWriter:
+    def __init__(self, fd, filename, infodict, progress_idx=0):
+        self.fd = fd
+        self.fp = None
+        self.filename = filename
+        self._tmp_filename = None
+        self._open_mode = 'wb'
+        self._progress = None
+        self.info_dict = infodict
+        self._downloaded_bytes = 0
+        self.progress_idx = progress_idx
+
+    def _open(self):
+        self._tmp_filename = self.fd.temp_name(self.filename)
+        try:
+            self.fp, self._tmp_filename = self.fd.sanitize_open(self._tmp_filename, self._open_mode)
+            assert self.fp is not None
+            self.filename = self.fd.undo_temp_name(self._tmp_filename)
+            self.fd.report_destination(self.filename)
+        except OSError as err:
+            raise DownloadError(f'unable to open for writing: {err}')
+
+    def write(self, data: bytes, metadata: SABRStatus):
+        if not self._progress:
+            self._progress = ProgressCalculator(metadata.start_bytes)
+
+        if not self.fp:
+            self._open()
+        if self.fp.closed:
+            raise ValueError('File is closed')
+        self.fp.write(data)
+
+        self._downloaded_bytes += len(data)
+        self._progress.total = self.info_dict.get('filesize')
+        self._progress.update(self._downloaded_bytes)
+
+        self.fd._hook_progress({
+            'status': 'downloading',
+            'downloaded_bytes': self._downloaded_bytes,
+            'total_bytes': self.info_dict.get('filesize'),
+            'tmpfilename': self._tmp_filename,
+            'filename': self.filename,
+            'eta': self._progress.eta.smooth,
+            'speed': self._progress.speed.smooth,
+            'elapsed': self._progress.elapsed,
+            'progress_idx': self.progress_idx,
+            'fragment_count': metadata.fragment_count,
+            'fragment_index': metadata.fragment_index,
+        }, self.info_dict)
+
+    def finish(self):
+        if self.fp:
+            self.fp.close()
+            self.fd.try_rename(self._tmp_filename, self.filename)
+
+
 class SABRFD(FileDownloader):
 
     @classmethod
@@ -435,15 +496,7 @@ class SABRFD(FileDownloader):
             stream = None
             tmpfilename = self.temp_name(format.get('filepath'))
             open_mode = 'wb'
-            try:
-                stream, tmpfilename = self.sanitize_open(
-                tmpfilename, open_mode)
-                assert stream is not None
-                filename = self.undo_temp_name(tmpfilename)
-                self.report_destination(filename)
-            except OSError as err:
-                self.report_error(f'unable to open for writing: {err}')
-                return False
+
 
             def callback(data, close=False):
                 if close:
@@ -460,8 +513,9 @@ class SABRFD(FileDownloader):
 
             return callback
 
+        writers = []
 
-        for format in requested_formats:
+        for idx, format in enumerate(requested_formats):
             sabr_config = format.get('_sabr_config')
 
             if not server_abr_streaming_url:
@@ -492,6 +546,8 @@ class SABRFD(FileDownloader):
             if po_token:
                 po_token_fn = lambda: po_token
 
+            writer = SABRFDWriter(self, format.get('filepath'), format, idx)
+            writers.append(writer)
 
             formats.append(SABRFormat(
                 itag = int(sabr_config['itag']),
@@ -499,7 +555,8 @@ class SABRFD(FileDownloader):
                 format_type = FormatType.VIDEO if format.get('acodec') == 'none' else FormatType.AUDIO,
                 quality=None,
                 height=None,
-                write_callback=create_write_callback(format)
+                xtags=None,
+                write_callback=writer.write
             ))
 
         innertube_client = INNERTUBE_CLIENTS.get(client_name)
@@ -508,11 +565,13 @@ class SABRFD(FileDownloader):
             client_version= traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'clientVersion')),
         )
 
+        if len(formats) > 1:
+            self._prepare_multiline_status(len(formats))
+
         stream = SABRStream(self, server_abr_streaming_url, video_playback_ustreamer_config, po_token_fn, formats, client_info)
         stream.download()
 
-        for format in requested_formats:
-            filename = format.get('filepath')
-            self.try_rename(self.temp_name(filename), filename)
+        for writer in writers:
+            writer.finish()
 
         return True
