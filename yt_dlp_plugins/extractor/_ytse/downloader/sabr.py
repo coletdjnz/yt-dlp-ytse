@@ -1,6 +1,8 @@
 import base64
+import collections
 import dataclasses
 import enum
+import itertools
 import math
 import time
 import typing
@@ -25,7 +27,7 @@ class FormatType(enum.Enum):
 
 
 def get_format_key(format_id: FormatId):
-    return f'{format_id.itag}-{format_id.last_modified}'
+    return f'{format_id.itag}-{format_id.last_modified}-{format_id.xtags}'
 
 
 @dataclasses.dataclass
@@ -34,15 +36,14 @@ class SABRStatus:
     fragment_index: int = None
     fragment_count: int = None
 
+
 @dataclasses.dataclass
-class SABRFormat:
-    itag: int
-    xtags: str
-    last_modified_at: int
+class FormatRequest:
     format_type: FormatType
-    quality: str
-    height: str
+    format_id: FormatId
     write_callback: typing.Callable[[bytes, SABRStatus], None]
+    quality: typing.Optional[str] = None
+    height: typing.Optional[str] = None
 
 
 @dataclasses.dataclass
@@ -61,7 +62,7 @@ class Sequence:
 class InitializedFormat:
     format_id: FormatId
     video_id: str
-    requested_format: SABRFormat
+    requested_format: FormatRequest
     duration_ms: int = 0
     end_time_ms: int = 0
     mime_type: str = None
@@ -70,40 +71,36 @@ class InitializedFormat:
 
 
 class SABRStream:
-    def __init__(self, fd, server_abr_streaming_url: str, video_playback_ustreamer_config: str, po_token_fn: callable, formats: list[SABRFormat], client_info: ClientInfo, live_segment_target_duration_sec: int = 5):
+    def __init__(self, fd, server_abr_streaming_url: str, video_playback_ustreamer_config: str, po_token_fn: callable, client_info: ClientInfo, video_formats: List[FormatRequest] = None, audio_formats: List[FormatRequest] = None, live_segment_target_duration_sec: int = 5):
+
+        self._requested_video_formats: List[FormatRequest] = video_formats or []
+        self._requested_audio_formats: List[FormatRequest] = audio_formats or []
         self.server_abr_streaming_url = server_abr_streaming_url
         self.video_playback_ustreamer_config = video_playback_ustreamer_config
         self.po_token_fn = po_token_fn
-        self.requestedFormats = formats
         self.client_info = client_info
-
         self.client_abr_state: ClientAbrState = None
-
         self.next_request_policy: NextRequestPolicy = None
-
         self.initialized_formats: dict[str, InitializedFormat] = {}
         self.header_ids: dict[int, Sequence] = {}
         self.live_metadata: LiveMetadata = None
-
         self.fd: FileDownloader = fd
-
         self.total_duration_ms = None
-
         self.sabr_seeked = False
         self.live_segment_target_duration_sec = live_segment_target_duration_sec
         self._request_had_data = False
 
     def download(self):
-        video_formats = [format for format in self.requestedFormats if format.format_type == FormatType.VIDEO]
-        audio_formats = [format for format in self.requestedFormats if format.format_type == FormatType.AUDIO]
-
         # note: MEDIA_TYPE_VIDEO is no longer supported
         media_type = ClientAbrState.MediaType.MEDIA_TYPE_DEFAULT
-        if len(video_formats) == 0:
+        if len(self._requested_video_formats) == 0:
             media_type = ClientAbrState.MediaType.MEDIA_TYPE_AUDIO
 
-        selected_audio_format_ids = [FormatId(itag=format.itag, last_modified=format.last_modified_at) for format in audio_formats]
-        selected_video_format_ids = [FormatId(itag=format.itag, last_modified=format.last_modified_at) for format in video_formats]
+        # todo: handle non-format-id format requests
+        selected_audio_format_ids = [f.format_id for f in self._requested_audio_formats]
+        selected_video_format_ids = [f.format_id for f in self._requested_video_formats]
+
+        self._requested_format_ids = selected_audio_format_ids + selected_video_format_ids
 
         # initialize client abr state
         self.client_abr_state = ClientAbrState(
@@ -370,6 +367,15 @@ class SABRStream:
         # shown on IOS. Shows available formats. Probably not very useful?
         self.write_ump_debug(part, f'Selectable Formats: {part.get_b64_str()}')
 
+    def _find_matching_requested_format(self, format_init_metadata: FormatInitializationMetadata):
+        for requested_format in self._requested_audio_formats + self._requested_video_formats:
+            if requested_format.format_id:
+                if requested_format.format_id == format_init_metadata.format_id:
+                    return requested_format
+            else:
+                # todo: add more matching criteria if the requested format does not have a format_id
+                pass
+
     def process_format_initialization_metadata(self, part: UMPPart):
         fmt_init_metadata = protobug.loads(part.data, FormatInitializationMetadata)
         self.write_ump_debug(part, f'Format Initialization Metadata: {fmt_init_metadata} Data: {part.get_b64_str()}')
@@ -379,9 +385,8 @@ class SABRStream:
         if initialized_format_key in self.initialized_formats:
             self.write_ump_debug(part, 'Format already initialized')
             return
-        # find matching requested format key
 
-        matching_requested_format = next((format for format in self.requestedFormats if get_format_key(FormatId(itag=format.itag, last_modified=format.last_modified_at) ) == initialized_format_key), None)
+        matching_requested_format = self._find_matching_requested_format(fmt_init_metadata)
 
         if not matching_requested_format:
             self.write_ump_warning(part, f'Format {initialized_format_key} not in requested formats.. Ignoring')
@@ -402,7 +407,6 @@ class SABRStream:
         self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
 
         self.write_ump_debug(part, f'Initialized Format: {initialized_format}')
-
 
     def process_next_request_policy(self, part: UMPPart):
         self.next_request_policy = protobug.loads(part.data, NextRequestPolicy)
@@ -457,7 +461,6 @@ class SABRFDWriter:
         self._downloaded_bytes += len(data)
         self._progress.total = self.info_dict.get('filesize')
         self._progress.update(self._downloaded_bytes)
-
         self.fd._hook_progress({
             'status': 'downloading',
             'downloaded_bytes': self._downloaded_bytes,
@@ -494,100 +497,102 @@ class SABRFD(FileDownloader):
         # todo: Here we would sort formats into groups of audio + video, and per client
 
         # assuming we have only selected audio + video, and they are of the same client, for now.
+        requested_formats = info_dict.get('requested_formats') or [info_dict]
+        sabr_format_groups = collections.defaultdict(dict, {})
 
-        requested_formats = info_dict.get('requested_formats')
+        for idx, f in enumerate(requested_formats):
+            sabr_config = f.get('_sabr_config')
+            client_name = sabr_config.get('client_name')
 
-        if not requested_formats:
-            requested_formats = [info_dict]
-            info_dict['filepath'] = filename
+            # Group formats by client
+            # sabr_format_groups = { client_name: { server_abr_streaming_url: xyz, formats: [] } } }
 
-
-        formats = []
-        po_token_fn = lambda: None
-        server_abr_streaming_url = None
-        video_playback_ustreamer_config = None
-        client_name = None
-        innertube_context = None
-        def create_write_callback(format):
-            stream = None
-            tmpfilename = self.temp_name(format.get('filepath'))
-            open_mode = 'wb'
-
-
-            def callback(data, close=False):
-                if close:
-                    self.write_debug(f'Closing {filename}')
-                    stream.close()
-                    return True
-                #self.write_debug(f'Writing {len(data)} bytes to {filename}')
-                try:
-                    stream.write(data)
-                except OSError as err:
-                    self.to_stderr('\n')
-                    self.report_error(f'unable to write data: {err}')
-                    return False
-
-            return callback
-
-        writers = []
-
-        for idx, format in enumerate(requested_formats):
-            sabr_config = format.get('_sabr_config')
-
-            if not server_abr_streaming_url:
-                server_abr_streaming_url = format.get('url')
-
-            if server_abr_streaming_url != format.get('url'):
-                self.report_error('All formats must have the same server_abr_streaming_url')
-                return
+            server_abr_streaming_url = f.get('url')
+            video_playback_ustreamer_config = sabr_config.get('video_playback_ustreamer_config')
 
             if not video_playback_ustreamer_config:
-                video_playback_ustreamer_config = sabr_config.get('video_playback_ustreamer_config')
-
-            if video_playback_ustreamer_config != sabr_config.get('video_playback_ustreamer_config'):
-                self.report_error('All formats must have the same video_playback_ustreamer_config')
+                self.report_error('Video playback ustreamer config not found')
                 return
 
-            if not client_name:
-                client_name = sabr_config.get('client_name')
+            sabr_format_group_config = sabr_format_groups.get(client_name)
 
-            if client_name != sabr_config.get('client_name'):
-                self.report_error('All formats must have the same client_name')
-                return
+            if not sabr_format_group_config:
+                po_token = sabr_config.get('po_token')
+                innertube_client = INNERTUBE_CLIENTS.get(client_name)
+                sabr_format_group_config = sabr_format_groups[client_name] = {
+                    'server_abr_streaming_url': server_abr_streaming_url,
+                    'video_playback_ustreamer_config': video_playback_ustreamer_config,
+                    'formats': [],
+                    'po_token_fn': lambda: po_token,
+                    # todo: pass this information down from YoutubeIE
+                    'client_info': ClientInfo(
+                        client_name=innertube_client['INNERTUBE_CONTEXT_CLIENT_NAME'],
+                        client_version=traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'clientVersion')),
+                    ),
+                    'writers': []
+                }
 
-            if not innertube_context:
-                innertube_context = sabr_config.get('innertube_context')
+            else:
+                if sabr_format_group_config['server_abr_streaming_url'] != server_abr_streaming_url:
+                    self.report_error('Server ABR streaming URL mismatch')
+                    return
 
-            po_token = sabr_config.get('po_token')
-            if po_token:
-                po_token_fn = lambda: po_token
+                if sabr_format_group_config['video_playback_ustreamer_config'] != video_playback_ustreamer_config:
+                    self.report_error('Video playback ustreamer config mismatch')
+                    return
 
-            writer = SABRFDWriter(self, format.get('filepath'), format, idx)
-            writers.append(writer)
+            itag = int_or_none(sabr_config.get('itag'))
+            sabr_format_group_config['formats'].append({
+                'format_id': itag and FormatId(itag=itag, last_modified=int_or_none(sabr_config.get('last_modified')), xtags=sabr_config.get('xtags')),
+                'format_type': FormatType.VIDEO if f.get('acodec') == 'none' else FormatType.AUDIO,
+                'quality': sabr_config.get('quality'),
+                'height': sabr_config.get('height'),
+                'filename': f.get('filepath', filename),
+                'info_dict': f,
+            })
 
-            formats.append(SABRFormat(
-                itag = int(sabr_config['itag']),
-                last_modified_at = int_or_none(sabr_config.get('last_modified')),
-                format_type = FormatType.VIDEO if format.get('acodec') == 'none' else FormatType.AUDIO,
-                quality=None,
-                height=None,
-                xtags=None,
-                write_callback=writer.write
-            ))
+        for name, format_group in sabr_format_groups.items():
+            formats = format_group['formats']
 
-        innertube_client = INNERTUBE_CLIENTS.get(client_name)
-        client_info = ClientInfo(
-            client_name = innertube_client['INNERTUBE_CONTEXT_CLIENT_NAME'],
-            client_version= traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'clientVersion')),
-        )
+            self.write_debug(f'Downloading formats for client {name}')
 
-        if len(formats) > 1:
-            self._prepare_multiline_status(len(formats))
+            # Group formats into video_audio pairs. SABR can currently download video+audio or audio.
+            # Just video requires the audio stream to be discarded.
+            audio_formats = (f for f in formats if f['format_type'] == FormatType.AUDIO)
+            video_formats = (f for f in formats if f['format_type'] == FormatType.VIDEO)
+            for audio_format, video_format in itertools.zip_longest(audio_formats, video_formats):
+                audio_format_writer = audio_format and SABRFDWriter(self, audio_format.get('filename'), audio_format['info_dict'], 0)
+                video_format_writer = video_format and SABRFDWriter(self, video_format.get('filename'), video_format['info_dict'], 1 if audio_format else 0)
+                if not audio_format and video_format:
+                    self.write_debug('Downloading a video stream without audio. SABR does not allow video-only, so an additional audio stream will be downloaded but discarded.')
 
-        stream = SABRStream(self, server_abr_streaming_url, video_playback_ustreamer_config, po_token_fn, formats, client_info)
-        stream.download()
+                stream = SABRStream(
+                    fd=self,
+                    server_abr_streaming_url=format_group['server_abr_streaming_url'],
+                    video_playback_ustreamer_config=format_group['video_playback_ustreamer_config'],
+                    po_token_fn=format_group['po_token_fn'],
+                    video_formats=video_format and [FormatRequest(
+                        format_id=video_format['format_id'],
+                        format_type=FormatType.VIDEO,
+                        quality=video_format['quality'],
+                        height=video_format['height'],
+                        write_callback=video_format_writer.write
+                    )],
+                    audio_formats=audio_format and [FormatRequest(
+                        format_id=audio_format['format_id'],
+                        format_type=FormatType.AUDIO,
+                        quality=audio_format['quality'],
+                        height=audio_format['height'],
+                        write_callback=audio_format_writer.write
+                    )],
+                    client_info=format_group['client_info']
+                )
+                self._prepare_multiline_status(int(bool(audio_format and video_format)) + 1)
 
-        for writer in writers:
-            writer.finish()
+                stream.download()
+                if audio_format_writer:
+                    audio_format_writer.finish()
+                if video_format_writer:
+                    video_format_writer.finish()
 
         return True
