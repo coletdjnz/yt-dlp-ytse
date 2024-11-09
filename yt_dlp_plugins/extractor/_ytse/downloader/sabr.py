@@ -447,7 +447,7 @@ class SABRStream:
         if not expires_at:
             self.fd.report_warning('No expiry found in server ABR streaming URL')
 
-        if expires_at + 300 >= time.time():
+        if expires_at - 300 >= time.time():
             self.fd.write_debug(f'videoplayback url expires in {int(expires_at - time.time())} seconds')
             return True
 
