@@ -12,6 +12,7 @@ from yt_dlp import traverse_obj, int_or_none, DownloadError
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request
+from yt_dlp.utils import parse_qs
 from yt_dlp.utils.progress import ProgressCalculator
 from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect, FormatInitializationMetadata, NextRequestPolicy, LiveMetadata, SabrSeek, SabrError
 from yt_dlp_plugins.extractor._ytse.protos._buffered_range import BufferedRange
@@ -71,13 +72,24 @@ class InitializedFormat:
 
 
 class SABRStream:
-    def __init__(self, fd, server_abr_streaming_url: str, video_playback_ustreamer_config: str, po_token_fn: callable, client_info: ClientInfo, video_formats: List[FormatRequest] = None, audio_formats: List[FormatRequest] = None, live_segment_target_duration_sec: int = 5):
+    def __init__(
+        self,
+        fd,
+        server_abr_streaming_url: str,
+        video_playback_ustreamer_config: str,
+        po_token_fn: typing.Callable[[], str],
+        client_info: ClientInfo,
+        video_formats: List[FormatRequest] = None, audio_formats: List[FormatRequest] = None,
+        live_segment_target_duration_sec: int = 5,
+        reload_config_fn: typing.Callable[[], tuple[str, str]] = None
+    ):
 
         self._requested_video_formats: List[FormatRequest] = video_formats or []
         self._requested_audio_formats: List[FormatRequest] = audio_formats or []
         self.server_abr_streaming_url = server_abr_streaming_url
         self.video_playback_ustreamer_config = video_playback_ustreamer_config
         self.po_token_fn = po_token_fn
+        self.reload_config_fn = reload_config_fn
         self.client_info = client_info
         self.client_abr_state: ClientAbrState = None
         self.next_request_policy: NextRequestPolicy = None
@@ -190,6 +202,8 @@ class SABRStream:
             # The response should automatically close when all data is read, but just in case...
             if not response.closed:
                 response.close()
+
+            self._check_expiry()
 
     def write_ump_debug(self, part, message):
         pass
@@ -425,6 +439,21 @@ class SABRStream:
         sabr_error = protobug.loads(part.data, SabrError)
         raise DownloadError(f'SABR Error: {sabr_error} Data: {part.get_b64_str()}')
 
+    def _check_expiry(self):
+        expires_at = int_or_none(traverse_obj(parse_qs(self.server_abr_streaming_url), ('expire', 0), get_all=False))
+
+        if not expires_at:
+            self.fd.report_warning('No expiry found in server ABR streaming URL')
+
+        if expires_at + 300 >= time.time():
+            self.fd.write_debug(f'videoplayback url expires in {int(expires_at - time.time())} seconds')
+            return True
+
+        if not self.reload_config_fn:
+            raise DownloadError('No reload config function found - cannot refresh server ABR streaming URL')
+
+        self.server_abr_streaming_url, self.video_playback_ustreamer_config = self.reload_config_fn()
+
 
 class SABRFDWriter:
     def __init__(self, fd, filename, infodict, progress_idx=0):
@@ -522,6 +551,7 @@ class SABRFD(FileDownloader):
                     'video_playback_ustreamer_config': video_playback_ustreamer_config,
                     'formats': [],
                     'po_token_fn': lambda: po_token,
+                    'reload_config_fn': sabr_config.get('reload_config_fn'),
                     # todo: pass this information down from YoutubeIE
                     'client_info': ClientInfo(
                         client_name=innertube_client['INNERTUBE_CONTEXT_CLIENT_NAME'],
@@ -583,7 +613,8 @@ class SABRFD(FileDownloader):
                         height=audio_format['height'],
                         write_callback=audio_format_writer.write
                     )],
-                    client_info=format_group['client_info']
+                    client_info=format_group['client_info'],
+                    reload_config_fn=format_group['reload_config_fn']
                 )
                 self._prepare_multiline_status(int(bool(audio_format and video_format)) + 1)
 

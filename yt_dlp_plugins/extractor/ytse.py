@@ -35,6 +35,23 @@ sys.modules.get('yt_dlp.YoutubeDL').get_suitable_downloader = get_suitable_downl
 
 class _YTSE(YoutubeIE, plugin_name='YTSE'):
 
+    def _reload_sabr_config(self, video_id, client_name):
+        url = 'https://www.youtube.com/watch?v=' + video_id
+        _, _, prs, player_url = self._download_player_responses(url, dict(), video_id, url)
+        video_details = traverse_obj(prs, (..., 'videoDetails'), expected_type=dict)
+        microformats = traverse_obj(
+            prs, (..., 'microformat', 'playerMicroformatRenderer'),
+            expected_type=dict)
+        _, live_status, _, formats, _ = self._list_formats(video_id, microformats, video_details, prs, player_url)
+
+        for format in formats:
+            if format.get('protocol') == 'sabr':
+                sabr_config = format['_sabr_config']
+                if sabr_config['client_name'] == client_name:
+                    return format['url'], sabr_config['video_playback_ustreamer_config']
+
+        raise ExtractorError('No SABR formats found', expected=True)
+
     def _extract_sabr_formats(self, video_id, player_response, player_url, live_status, duration):
 
         formats = []
@@ -53,11 +70,11 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
         po_token = streaming_data.get('__yt_dlp_po_token')
 
         sabr_config = {
-            'server_abr_streaming_url': server_abr_streaming_url,
             'video_playback_ustreamer_config': video_playback_ustreamer_config,
             'po_token': po_token,
             'client_name': client_name,
             'innertube_context': traverse_obj(player_response, 'responseContext'),
+            'reload_config_fn': lambda: self._reload_sabr_config(video_id, client_name),
         }
 
         q = qualities([
