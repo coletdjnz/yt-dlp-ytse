@@ -169,6 +169,8 @@ class SABRStream:
                         raise DownloadError('No data found in three consecutive requests')
                     break  # stream finished?
                 requests_no_data += 1
+            else:
+                requests_no_data = 0
 
             current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self.initialized_formats.values() if initialized_format.buffered_ranges]
 
