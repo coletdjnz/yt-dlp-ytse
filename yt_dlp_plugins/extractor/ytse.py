@@ -205,26 +205,25 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
         return formats
 
     def _list_formats(self, video_id, microformats, video_details, player_responses, player_url, duration=None):
-        #live_broadcast_details, live_status, streaming_data, formats, subtitles = super()._list_formats(video_id, microformats, video_details, player_responses, player_url, duration)
+        live_broadcast_details, live_status, streaming_data, formats, subtitles = super()._list_formats(video_id, microformats, video_details, player_responses, player_url, duration)
 
         format_types = self._configuration_arg('formats')
 
-        # if 'ump' in format_types or 'duplicate' in format_types:
-        #     ump_formats = []
-        #     for f in formats:
-        #         if f.get('protocol') not in ('https', None):
-        #             continue
-        #         format_copy = f.copy()
-        #         format_copy['protocol'] = 'ump'
-        #         format_copy['url'] = update_url_query(format_copy['url'], {'ump': 1, 'srfvp': 1})
-        #         ump_formats.append(format_copy)
-        #
-        #     formats.extend(ump_formats)
+        if 'ump' in format_types or 'duplicate' in format_types:
+            ump_formats = []
+            for f in formats:
+                if f.get('protocol') not in ('https', None):
+                    continue
+                format_copy = f.copy()
+                format_copy['protocol'] = 'ump'
+                format_copy['url'] = update_url_query(format_copy['url'], {'ump': 1, 'srfvp': 1})
+                ump_formats.append(format_copy)
+
+            formats.extend(ump_formats)
 
         if 'sabr' in format_types or 'duplicate' in format_types:
             formats = []
             for player_response in player_responses:
-                formats.extend(self._extract_sabr_formats(video_id, player_response, player_url, None, duration))
+                formats.extend(self._extract_sabr_formats(video_id, player_response, player_url, live_status, duration))
 
-        live_broadcast_details, live_status, streaming_data, subtitles = None, None, None, dict()
         return live_broadcast_details, live_status, streaming_data, formats, subtitles

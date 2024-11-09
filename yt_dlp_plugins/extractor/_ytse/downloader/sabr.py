@@ -437,6 +437,7 @@ class SABRFDWriter:
         self.info_dict = infodict
         self._downloaded_bytes = 0
         self.progress_idx = progress_idx
+        self._state = {}
 
     def _open(self):
         self._tmp_filename = self.fd.temp_name(self.filename)
@@ -461,7 +462,7 @@ class SABRFDWriter:
         self._downloaded_bytes += len(data)
         self._progress.total = self.info_dict.get('filesize')
         self._progress.update(self._downloaded_bytes)
-        self.fd._hook_progress({
+        self._state = {
             'status': 'downloading',
             'downloaded_bytes': self._downloaded_bytes,
             'total_bytes': self.info_dict.get('filesize'),
@@ -473,9 +474,12 @@ class SABRFDWriter:
             'progress_idx': self.progress_idx,
             'fragment_count': metadata.fragment_count,
             'fragment_index': metadata.fragment_index,
-        }, self.info_dict)
+        }
+        self.fd._hook_progress(self._state, self.info_dict)
 
     def finish(self):
+        self._state['status'] = 'finished'
+        self.fd._hook_progress(self._state, self.info_dict)
         if self.fp:
             self.fp.close()
             self.fd.try_rename(self._tmp_filename, self.filename)
@@ -485,18 +489,12 @@ class SABRFD(FileDownloader):
 
     @classmethod
     def can_download(cls, info_dict):
-        # todo: validate all formats
-
         return (
             info_dict.get('requested_formats') and
             all(format_info.get('protocol') == 'sabr' for format_info in info_dict['requested_formats'])
         )
 
     def real_download(self, filename, info_dict):
-
-        # todo: Here we would sort formats into groups of audio + video, and per client
-
-        # assuming we have only selected audio + video, and they are of the same client, for now.
         requested_formats = info_dict.get('requested_formats') or [info_dict]
         sabr_format_groups = collections.defaultdict(dict, {})
 
@@ -589,10 +587,17 @@ class SABRFD(FileDownloader):
                 )
                 self._prepare_multiline_status(int(bool(audio_format and video_format)) + 1)
 
-                stream.download()
-                if audio_format_writer:
-                    audio_format_writer.finish()
-                if video_format_writer:
-                    video_format_writer.finish()
+                try:
+                    stream.download()
+                except KeyboardInterrupt:
+                    if not info_dict.get('is_live'):
+                        raise
+                    self.to_screen(f'Interrupted by user')
+                    return True
+                finally:
+                    if audio_format_writer:
+                        audio_format_writer.finish()
+                    if video_format_writer:
+                        video_format_writer.finish()
 
         return True
