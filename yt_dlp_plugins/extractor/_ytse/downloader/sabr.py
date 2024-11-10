@@ -184,7 +184,7 @@ class SABRStream:
             if not self._request_had_data:
                 if requests_no_data >= 2:
                     if self.client_abr_state.start_time_ms < self.total_duration_ms:
-                        raise DownloadError('No data found in three consecutive requests')
+                        self._logger.warning('No data found in three consecutive requests - assuming end of video')
                     break  # stream finished?
                 requests_no_data += 1
             else:
