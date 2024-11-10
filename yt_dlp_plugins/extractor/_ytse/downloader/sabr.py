@@ -10,8 +10,9 @@ from typing import List
 import protobug
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
-from yt_dlp.networking import Request
+from yt_dlp.networking import Request, Response
 from yt_dlp.utils import parse_qs, traverse_obj, int_or_none, DownloadError
+from yt_dlp.utils._utils import _YDLLogger
 from yt_dlp.utils.progress import ProgressCalculator
 
 from yt_dlp_plugins.extractor._ytse.protos import (
@@ -29,7 +30,8 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     FormatId,
     StreamerContext,
     ClientInfo,
-    TimeRange
+    TimeRange,
+    unknown_fields
 )
 
 from yt_dlp_plugins.extractor._ytse.ump import UMPParser, UMPPart, UMPPartType
@@ -87,16 +89,21 @@ class InitializedFormat:
 class SABRStream:
     def __init__(
         self,
-        fd,
+        urlopen: typing.Callable[[Request], Response],
+        logger: _YDLLogger,
         server_abr_streaming_url: str,
         video_playback_ustreamer_config: str,
         po_token_fn: typing.Callable[[], str],
         client_info: ClientInfo,
         video_formats: List[FormatRequest] = None, audio_formats: List[FormatRequest] = None,
         live_segment_target_duration_sec: int = 5,
-        reload_config_fn: typing.Callable[[], tuple[str, str]] = None
+        reload_config_fn: typing.Callable[[], tuple[str, str]] = None,
+        debug=False,
     ):
 
+        self._logger = logger
+        self._debug = debug
+        self._urlopen = urlopen
         self._requested_video_formats: List[FormatRequest] = video_formats or []
         self._requested_audio_formats: List[FormatRequest] = audio_formats or []
         self.server_abr_streaming_url = server_abr_streaming_url
@@ -109,7 +116,6 @@ class SABRStream:
         self.initialized_formats: dict[str, InitializedFormat] = {}
         self.header_ids: dict[int, Sequence] = {}
         self.live_metadata: LiveMetadata = None
-        self.fd: FileDownloader = fd
         self.total_duration_ms = None
         self.sabr_seeked = False
         self.live_segment_target_duration_sec = live_segment_target_duration_sec
@@ -135,6 +141,7 @@ class SABRStream:
 
         request_number = 0
         while self.live_metadata or not self.total_duration_ms or self.client_abr_state.start_time_ms < self.total_duration_ms:
+            self._check_expiry()
             po_token = self.po_token_fn()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self.client_abr_state,
@@ -156,9 +163,9 @@ class SABRStream:
             )
             payload = protobug.dumps(vpabr)
 
-            self.fd.write_debug(f'Requested video playback abr request. {vpabr}')
+            self.write_sabr_debug(f'Sending videoplayback SABR request: {vpabr}')
 
-            response = self.fd.ydl.urlopen(
+            response = self._urlopen(
                 Request(
                     url=self.server_abr_streaming_url,
                     method='POST',
@@ -171,7 +178,7 @@ class SABRStream:
             self.parse_ump_response(response)
 
             if len(self.header_ids):
-                self.fd.report_warning('Extraneous header IDs left')
+                self._logger.warning(f'Extraneous header IDs left: {list(self.header_ids.values())}')
                 self.header_ids.clear()
 
             if not self._request_had_data:
@@ -201,7 +208,7 @@ class SABRStream:
             if self.live_metadata and self.client_abr_state.start_time_ms >= self.total_duration_ms:
                 self.client_abr_state.start_time_ms = self.total_duration_ms
                 wait_time = next_request_backoff_ms + self.live_segment_target_duration_sec * 1000
-                self.fd.write_debug(f'sleeping {wait_time / 1000} seconds')
+                self.write_sabr_debug(f'sleeping {wait_time / 1000} seconds')
                 time.sleep(wait_time / 1000)
 
             self.next_request_policy = None
@@ -210,22 +217,25 @@ class SABRStream:
 
             request_number += 1
 
-          #  self.fd.write_debug(f'Progress: {self.client_abr_state.start_time_ms}/{self.total_duration_ms}')
-
             # The response should automatically close when all data is read, but just in case...
             if not response.closed:
                 response.close()
 
-            self._check_expiry()
-
-    def write_ump_debug(self, part, message):
-        pass
-        #if traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'ump_debug', 0, {int_or_none}), get_all=False) == 1:
-        self.fd.write_debug(f'[{part.part_type.name}]: (Size {part.size}) {message}')
-
-    def write_ump_warning(self, part, message):
-        pass
-        self.fd.write_debug(f'[{part.part_type.name}]: (Size {part.size}) {message}')
+    def write_sabr_debug(self, message=None, part=None, protobug_obj=None, data=None):
+        msg = ''
+        if part:
+            msg = f'[{part.part_type.name}]: (Size {part.size})'
+        if protobug_obj:
+            msg += f' Parsed: {protobug_obj}'
+            uf = list(unknown_fields(protobug_obj))
+            if uf:
+                msg += f' (Unknown fields: {uf})'
+        if message:
+            msg += f' {message}'
+        if data:
+            msg += f' Data: {base64.b64encode(data).decode("utf-8")}'
+        if self._debug:
+            self._logger.debug(f'SABR: {msg}')
 
     def parse_ump_response(self, response):
         ump = UMPParser(response)
@@ -250,39 +260,33 @@ class SABRStream:
                 self.process_sabr_seek(part)
             elif part.part_type == UMPPartType.SABR_ERROR:
                 self.process_sabr_error(part)
-            elif part.part_type == UMPPartType.SELECTABLE_FORMATS:
-                self.process_selectable_formats(part)
             else:
-                self.write_ump_warning(part, f'Unhandled part type: {part.part_type.name}:{part.part_id} Data: {part.get_b64_str()}')
+                self.write_sabr_debug(f'Unhandled part type', part=part, data=part.data)
                 continue
 
     def process_media_header(self, part: UMPPart):
         media_header = protobug.loads(part.data, MediaHeader)
-        self.write_ump_debug(part, f'Parsed header: {media_header} Data: {part.get_b64_str()}')
+        self.write_sabr_debug(part=part, protobug_obj=media_header, data=part.data)
         if not media_header.format_id:
-            self.write_ump_warning(part, 'Format ID not found')
-            return
+            raise DownloadError(f'Format ID not found in MediaHeader (media_header={media_header})')
+
         initialized_format = self.initialized_formats.get(get_format_key(media_header.format_id))
         if not initialized_format:
-            self.write_ump_warning(part, f'Initialized format not found for {media_header.format_id}')
+            self.write_sabr_debug(f'Initialized format not found for {media_header.format_id}', part=part)
             return
 
         sequence_number = media_header.sequence_number
         if (sequence_number or 0) in initialized_format.sequences:
-            self.write_ump_warning(part, f'Sequence {sequence_number} already found, skipping')
+            self.write_sabr_debug(f'Sequence {sequence_number} already found, skipping', part=part)
             return
 
         is_init_segment = media_header.is_init_segment
-
         time_range = media_header.time_range
+        start_ms = media_header.start_ms or (time_range and time_range.get_start_ms()) or 0
 
         # Calculate duration of this segment
         # For videos, either duration_ms or time_range should be present
         # For live streams, calculate segment duration based on live metadata target segment duration
-
-
-        start_ms = media_header.start_ms or (time_range and time_range.get_start_ms()) or 0
-
         duration_ms = (
             media_header.duration_ms
             or (time_range and time_range.get_duration_ms())
@@ -320,7 +324,8 @@ class SABRStream:
                         timescale=1000  # ms
                     )
                 ))
-                self.write_ump_debug(part, f'Created new buffered range for {media_header.format_id} (sabr seeked={self.sabr_seeked}): {initialized_format.buffered_ranges[-1]}')
+                self.write_sabr_debug(
+                    part=part, message=f'Created new buffered range for {media_header.format_id} (sabr seeked={self.sabr_seeked}): {initialized_format.buffered_ranges[-1]}')
                 return
 
             end_segment_index = current_buffered_range.end_segment_index or 0
@@ -343,56 +348,47 @@ class SABRStream:
 
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
-        # self.write_ump_debug(part, f'Header ID: {header_id}')
 
         current_sequence = self.header_ids.get(header_id)
-
         if not current_sequence:
-            self.write_ump_warning(part, f'Header ID {header_id} not found')
+            self.write_sabr_debug(f'Header ID {header_id} not found', part=part)
             return
 
         initialized_format = current_sequence.initialized_format
 
         if not initialized_format:
-            self.write_ump_warning(part, f'Initialized Format not found for header ID {header_id}')
+            self.write_sabr_debug(f'Initialized Format not found for header ID {header_id}', part=part)
             return
 
-   #     self.write_ump_debug(part, f'Writing {len(part.data[1:])} bytes to initialized format {initialized_format}')
-
-        # todo: improve write callback
-        write_callback = initialized_format.requested_format.write_callback
-        write_callback(part.data[1:], SABRStatus(fragment_index=current_sequence.sequence_number, fragment_count=self.live_metadata and self.live_metadata.latest_sequence_number))
+        initialized_format.requested_format.write_callback(part.data[1:], SABRStatus(
+                fragment_index=current_sequence.sequence_number,
+                fragment_count=self.live_metadata and self.live_metadata.latest_sequence_number))
         self._request_had_data = True
 
     def process_media_end(self, part: UMPPart):
         header_id = part.data[0]
-        self.write_ump_debug(part, f' Header ID: {header_id}')
+        self.write_sabr_debug(f'Header ID: {header_id}', part=part)
         self.header_ids.pop(header_id, None)
 
     def process_live_metadata(self, part: UMPPart):
         self.live_metadata = protobug.loads(part.data, LiveMetadata)
-        self.write_ump_debug(part, f'Live Metadata: {self.live_metadata} Data: {part.get_b64_str()}')
+        self.write_sabr_debug(part=part, protobug_obj=self.live_metadata, data=part.data)
         if self.live_metadata.latest_sequence_duration_ms:
             self.total_duration_ms = self.live_metadata.latest_sequence_duration_ms
 
     def process_stream_protection_status(self, part: UMPPart):
         sps = protobug.loads(part.data, StreamProtectionStatus)
-        self.write_ump_debug(part, f'Status: {StreamProtectionStatus.Status(sps.status).name} Data: {part.get_b64_str()}')
+        self.write_sabr_debug(f'Status: {StreamProtectionStatus.Status(sps.status).name}', part=part, data=part.data)
         if sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
-            raise DownloadError('StreamProtectionStatus: Attestation Required (missing PO Token?)')
+            raise DownloadError('StreamProtectionStatus: Attestation Required')
 
     def process_sabr_redirect(self, part: UMPPart):
         sabr_redirect = protobug.loads(part.data, SabrRedirect)
+        self.write_sabr_debug(part=part, protobug_obj=sabr_redirect, data=part.data)
+        if not sabr_redirect.redirect_url:
+            self._logger.warning('SABRRedirect: Invalid redirect URL retrieved. Download may fail.')
+            return
         self.server_abr_streaming_url = sabr_redirect.redirect_url
-        self.write_ump_debug(part, f'New URL: {self.server_abr_streaming_url}')
-
-        # todo: validate redirect URL
-        if not self.server_abr_streaming_url:
-            self.fd.report_error('SABRRedirect: Invalid redirect URL')
-
-    def process_selectable_formats(self, part: UMPPart):
-        # shown on IOS. Shows available formats. Probably not very useful?
-        self.write_ump_debug(part, f'Selectable Formats: {part.get_b64_str()}')
 
     def _find_matching_requested_format(self, format_init_metadata: FormatInitializationMetadata):
         for requested_format in self._requested_audio_formats + self._requested_video_formats:
@@ -405,18 +401,18 @@ class SABRStream:
 
     def process_format_initialization_metadata(self, part: UMPPart):
         fmt_init_metadata = protobug.loads(part.data, FormatInitializationMetadata)
-        self.write_ump_debug(part, f'Format Initialization Metadata: {fmt_init_metadata} Data: {part.get_b64_str()}')
+        self.write_sabr_debug(part=part, protobug_obj=fmt_init_metadata, data=part.data)
 
         initialized_format_key = get_format_key(fmt_init_metadata.format_id)
 
         if initialized_format_key in self.initialized_formats:
-            self.write_ump_debug(part, 'Format already initialized')
+            self.write_sabr_debug('Format already initialized', part)
             return
 
         matching_requested_format = self._find_matching_requested_format(fmt_init_metadata)
 
         if not matching_requested_format:
-            self.write_ump_warning(part, f'Format {initialized_format_key} not in requested formats.. Ignoring')
+            self.write_sabr_debug(f'Format {initialized_format_key} not in requested formats.. Ignoring', part=part)
             return
 
         duration_ms = fmt_init_metadata.duration and math.ceil((fmt_init_metadata.duration / fmt_init_metadata.duration_timescale) * 1000)
@@ -433,38 +429,44 @@ class SABRStream:
 
         self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
 
-        self.write_ump_debug(part, f'Initialized Format: {initialized_format}')
+        self.write_sabr_debug(f'Initialized Format: {initialized_format}', part=part)
 
     def process_next_request_policy(self, part: UMPPart):
         self.next_request_policy = protobug.loads(part.data, NextRequestPolicy)
-        self.write_ump_debug(part, f'Next Request Policy: {self.next_request_policy} Data: {part.get_b64_str()}')
+        self.write_sabr_debug(part=part, protobug_obj=self.next_request_policy, data=part.data)
 
     def process_sabr_seek(self, part: UMPPart):
         sabr_seek = protobug.loads(part.data, SabrSeek)
         seek_to = math.ceil((sabr_seek.start / sabr_seek.timescale) * 1000)
-        self.write_ump_debug(part, f'Sabr Seek: {sabr_seek} Data: {part.get_b64_str()}')
-        self.write_ump_debug(part, f'Seeking to {seek_to}ms')
-
+        self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
+        self.write_sabr_debug(f'Seeking to {seek_to}ms')
         self.client_abr_state.start_time_ms = seek_to
         self.sabr_seeked = True
 
     def process_sabr_error(self, part: UMPPart):
         sabr_error = protobug.loads(part.data, SabrError)
-        raise DownloadError(f'SABR Error: {sabr_error} Data: {part.get_b64_str()}')
+        self.write_sabr_debug(part=part, protobug_obj=sabr_error, data=part.data)
+        raise DownloadError(f'SABR Returned Error: {sabr_error}')
 
     def _check_expiry(self):
         expires_at = int_or_none(traverse_obj(parse_qs(self.server_abr_streaming_url), ('expire', 0), get_all=False))
 
         if not expires_at:
-            self.fd.report_warning('No expiry found in server ABR streaming URL')
+            self.write_sabr_debug('No expiry found in server ABR streaming URL. Will not be able to refresh.')
+            return
 
         if expires_at - 300 >= time.time():
-            self.fd.write_debug(f'videoplayback url expires in {int(expires_at - time.time())} seconds')
-            return True
+            self.write_sabr_debug(f'videoplayback url expires in {int(expires_at - time.time())} seconds')
+            return
+
+        self.write_sabr_debug('Refreshing server ABR streaming URL')
 
         if not self.reload_config_fn:
-            raise DownloadError('No reload config function found - cannot refresh server ABR streaming URL')
+            raise self._logger.warning(
+                'No reload config function found - cannot refresh server ABR streaming URL.'
+                ' The url will expire in 5 minutes and the download will fail.')
 
+        # todo: handle errors here and fail gracefully to shutdown the stream
         self.server_abr_streaming_url, self.video_playback_ustreamer_config = self.reload_config_fn()
 
 
@@ -608,7 +610,9 @@ class SABRFD(FileDownloader):
                     self.write_debug('Downloading a video stream without audio. SABR does not allow video-only, so an additional audio stream will be downloaded but discarded.')
 
                 stream = SABRStream(
-                    fd=self,
+                    urlopen=self.ydl.urlopen,
+                    logger=_YDLLogger(self.ydl),
+                    debug=bool(traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'sabr_debug', 0, {int_or_none}), get_all=False)),
                     server_abr_streaming_url=format_group['server_abr_streaming_url'],
                     video_playback_ustreamer_config=format_group['video_playback_ustreamer_config'],
                     po_token_fn=format_group['po_token_fn'],

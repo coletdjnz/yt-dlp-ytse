@@ -12,3 +12,4 @@ class PlaybackCookie:
     video_fmt: typing.Optional[FormatId] = protobug.field(7, default=None)
     audio_fmt: typing.Optional[FormatId] = protobug.field(8, default=None)
     field14: typing.Optional[protobug.Int32] = protobug.field(14, default=None)
+    field20: typing.Optional[protobug.Bytes] = protobug.field(20, default=None)

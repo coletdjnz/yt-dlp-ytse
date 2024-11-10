@@ -1,3 +1,5 @@
+import dataclasses
+import typing
 from ._stream_protection_status import StreamProtectionStatus
 from ._media_header import MediaHeader
 from ._sabr_error import SabrError
@@ -16,3 +18,15 @@ from ._buffered_range import BufferedRange
 from ._format_id import FormatId
 from ._streamer_context import StreamerContext, ClientInfo
 from ._time_range import TimeRange
+
+
+def unknown_fields(obj: typing.Any, path=()) -> typing.Iterable[tuple[tuple[str, ...], dict[int, list]]]:
+    if not dataclasses.is_dataclass(obj):
+        return
+
+    if unknown := getattr(obj, "_unknown", None):
+        yield path, unknown
+
+    for field in dataclasses.fields(obj):
+        value = getattr(obj, field.name)
+        yield from unknown_fields(value, (*path, field.name))
