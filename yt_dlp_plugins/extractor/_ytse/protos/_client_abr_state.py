@@ -18,9 +18,14 @@ class ClientAbrState:
     max_width: typing.Optional[protobug.Int32] = protobug.field(18, default=None)
     max_height: typing.Optional[protobug.Int32] = protobug.field(19, default=None)
     selected_quality_height: typing.Optional[protobug.Int32] = protobug.field(21, default=None)
+    unknown_field_22: typing.Optional[protobug.Int32] = protobug.field(22, default=None)  # seen on android = 1 (when playing audio+video only)
     r7: typing.Optional[protobug.Int32] = protobug.field(23, default=None)
+    unknown_field_26: typing.Optional[protobug.Int32] = protobug.field(26, default=None)  # seen on android = 0
+    unknown_field_27: typing.Optional[protobug.Int32] = protobug.field(27, default=None)  # seen on android = 5
     start_time_ms: typing.Optional[protobug.Int64] = protobug.field(28, default=None)
     time_since_last_seek: typing.Optional[protobug.Int64] = protobug.field(29, default=None)
+    unknown_field_30: typing.Optional[protobug.Int32] = protobug.field(30, default=None)  # seen on android = 0
+    unknown_field_32: typing.Optional[protobug.Int32] = protobug.field(32, default=None)  # seen on android = 0
     visibility: typing.Optional[protobug.Int32] = protobug.field(34, default=None)
     time_since_last_req: typing.Optional[protobug.Int64] = protobug.field(36, default=None)
     media_capabilities: typing.Optional[MediaCapabilities] = protobug.field(38, default=None)

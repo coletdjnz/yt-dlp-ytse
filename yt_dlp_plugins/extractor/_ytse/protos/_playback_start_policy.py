@@ -12,3 +12,4 @@ class ReadaheadPolicy:
 class PlaybackStartPolicy:
     start_min_readahead_policy: ReadaheadPolicy = protobug.field(1, default_factory=ReadaheadPolicy)
     resume_min_readahead_policy: ReadaheadPolicy = protobug.field(2, default_factory=ReadaheadPolicy)
+    unknown_field_4: typing.Optional[protobug.Int32] = protobug.field(4, default=None)  # seen on android = 20000
