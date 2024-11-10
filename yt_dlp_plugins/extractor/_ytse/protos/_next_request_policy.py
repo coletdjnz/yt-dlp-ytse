@@ -1,6 +1,6 @@
 import typing
 import protobug
-from yt_dlp_plugins.extractor._ytse.protos import PlaybackCookie
+from ._playback_cookie import PlaybackCookie
 
 
 @protobug.message

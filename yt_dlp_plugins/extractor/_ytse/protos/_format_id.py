@@ -1,6 +1,7 @@
 import typing
 import protobug
 
+
 @protobug.message
 class FormatId:
   itag: typing.Optional[protobug.Int32] = protobug.field(1)

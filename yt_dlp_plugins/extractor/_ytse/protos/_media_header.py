@@ -1,13 +1,12 @@
-import enum
 import typing
 import protobug
-from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
-from yt_dlp_plugins.extractor._ytse.protos._time_range import TimeRange
+from ._format_id import FormatId
+from ._time_range import TimeRange
 
 
 @protobug.message
 class MediaHeader:
-    class Compression(enum.IntEnum):
+    class Compression(protobug.Enum, strict=False):
         UNKNOWN_VAL_0 = 0
         UNKNOWN_VAL_1 = 1
         GZIP = 2

@@ -1,6 +1,7 @@
 import typing
 import protobug
 
+
 @protobug.message
 class Item:
     fR: typing.Optional[protobug.Int32] = protobug.field(1, default=None)

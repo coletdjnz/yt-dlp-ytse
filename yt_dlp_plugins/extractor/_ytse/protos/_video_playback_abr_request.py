@@ -1,6 +1,6 @@
 import typing
-
 import protobug
+
 from ._buffered_range import BufferedRange
 from ._client_abr_state import ClientAbrState
 from ._format_id import FormatId

@@ -1,7 +1,6 @@
-import enum
 import typing
 import protobug
-from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
+from ._format_id import FormatId
 
 
 @protobug.message
@@ -16,19 +15,19 @@ class IndexRange:
     end: typing.Optional[protobug.Int32] = protobug.field(2, default=None)
 
 
-class ProjectionType(enum.IntEnum):
+class ProjectionType(protobug.Enum, strict=False):
     RECTANGULAR = 1
 
 
-class ColorPrimaries(enum.IntEnum):
+class ColorPrimaries(protobug.Enum, strict=False):
     COLOR_PRIMARIES_BT709 = 1
 
 
-class ColorTransferCharacteristics(enum.IntEnum):
+class ColorTransferCharacteristics(protobug.Enum, strict=False):
     COLOR_TRANSFER_CHARACTERISTICS_BT709 = 1
 
 
-class ColorMatrixCoefficients(enum.IntEnum):
+class ColorMatrixCoefficients(protobug.Enum, strict=False):
     COLOR_MATRIX_COEFFICIENTS_BT709 = 1
 
 

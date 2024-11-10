@@ -1,6 +1,6 @@
 import typing
 import protobug
-from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
+from ._format_id import FormatId
 
 
 @protobug.message

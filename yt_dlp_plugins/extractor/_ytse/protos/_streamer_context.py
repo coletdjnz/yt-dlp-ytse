@@ -1,8 +1,8 @@
 import typing
 import protobug
-import enum
 
-class ClientFormFactor(enum.IntEnum):
+
+class ClientFormFactor(protobug.Enum, strict=False):
     UNKNOWN_FORM_FACTOR = 0
     FORM_FACTOR_VAL1 = 1
     FORM_FACTOR_VAL2 = 2

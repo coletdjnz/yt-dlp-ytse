@@ -104,4 +104,4 @@ class UMPPartType(enum.IntEnum):
         return cls.UNKNOWN
 
 
-__all__ = ['UMPPart', 'UMPParser']
+__all__ = ['UMPPart', 'UMPParser', 'UMPPartType']

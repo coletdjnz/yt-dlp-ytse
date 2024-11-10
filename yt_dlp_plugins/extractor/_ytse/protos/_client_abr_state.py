@@ -1,12 +1,11 @@
-import enum
 import typing
 import protobug
-from._media_capabilities import MediaCapabilities
+from ._media_capabilities import MediaCapabilities
 
 
 @protobug.message
 class ClientAbrState:
-    class MediaType(enum.IntEnum):
+    class MediaType(protobug.Enum):
         MEDIA_TYPE_DEFAULT = 0
         MEDIA_TYPE_AUDIO = 1
         MEDIA_TYPE_VIDEO = 2

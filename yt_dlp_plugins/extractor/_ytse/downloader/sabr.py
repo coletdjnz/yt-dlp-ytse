@@ -8,17 +8,30 @@ import time
 import typing
 from typing import List
 import protobug
-from yt_dlp import traverse_obj, int_or_none, DownloadError
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request
-from yt_dlp.utils import parse_qs
+from yt_dlp.utils import parse_qs, traverse_obj, int_or_none, DownloadError
 from yt_dlp.utils.progress import ProgressCalculator
-from yt_dlp_plugins.extractor._ytse.protos import ClientAbrState, VideoPlaybackAbrRequest, PlaybackCookie, MediaHeader, StreamProtectionStatus, SabrRedirect, FormatInitializationMetadata, NextRequestPolicy, LiveMetadata, SabrSeek, SabrError
-from yt_dlp_plugins.extractor._ytse.protos._buffered_range import BufferedRange
-from yt_dlp_plugins.extractor._ytse.protos._format_id import FormatId
-from yt_dlp_plugins.extractor._ytse.protos._streamer_context import StreamerContext, ClientInfo
-from yt_dlp_plugins.extractor._ytse.protos._time_range import TimeRange
+
+from yt_dlp_plugins.extractor._ytse.protos import (
+    ClientAbrState,
+    VideoPlaybackAbrRequest,
+    MediaHeader,
+    StreamProtectionStatus,
+    SabrRedirect,
+    FormatInitializationMetadata,
+    NextRequestPolicy,
+    LiveMetadata,
+    SabrSeek,
+    SabrError,
+    BufferedRange,
+    FormatId,
+    StreamerContext,
+    ClientInfo,
+    TimeRange
+)
+
 from yt_dlp_plugins.extractor._ytse.ump import UMPParser, UMPPart, UMPPartType
 
 
@@ -111,8 +124,6 @@ class SABRStream:
         # todo: handle non-format-id format requests
         selected_audio_format_ids = [f.format_id for f in self._requested_audio_formats]
         selected_video_format_ids = [f.format_id for f in self._requested_video_formats]
-
-        self._requested_format_ids = selected_audio_format_ids + selected_video_format_ids
 
         # initialize client abr state
         self.client_abr_state = ClientAbrState(
