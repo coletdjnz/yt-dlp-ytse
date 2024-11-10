@@ -80,7 +80,41 @@ Prioritize UMP formats:
 
 Debug UMP messages:
 
-`--extractor-args youtube:ump_debug=1`
+`--extractor-args "youtube:ump_debug=1;formats=ump"`
+
+
+### SABR Downloader
+
+Supports:
+- Standard video downloading
+  - Note: SABR does not natively support downloading only video stream, so an audio stream is always downloaded (but discarded)
+- Livestreams
+
+Not supported:
+- `--download-sections`
+- `--concurrent-fragments/-N`
+- Resume downloads
+
+Enable SABR formats:
+
+`--extractor-args youtube:formats=sabr`
+
+<!--
+Prioritize SABR formats:
+
+`-S proto:sabr`
+-->
+
+Debug SABR messages:
+
+`--extractor-args "youtube:sabr_debug=1;formats=sabr"`
+
+
+
+See also:
+- [mitmproxy SABR parser script](utils/mitmproxy_sabrdump.py)
+- [Read SABR Request Python script](utils/read_sabr_request.py)
+- [Read SABR Response Python script](utils/read_sabr_response.py)
 
 
 ## Acknowledgements
