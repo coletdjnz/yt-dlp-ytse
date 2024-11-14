@@ -1,4 +1,3 @@
-import enum
 import typing
 import protobug
 
@@ -6,7 +5,7 @@ import protobug
 @protobug.message
 class StreamProtectionStatus:
 
-    class Status(enum.IntEnum):
+    class Status(protobug.Enum, strict=False):
         OK = 1
         ATTESTATION_PENDING = 2
         ATTESTATION_REQUIRED = 3

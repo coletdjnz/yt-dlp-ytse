@@ -54,6 +54,8 @@ class UMPParser:
     def iter_parts(self):
         while not self.response.closed:
             part_type = self._read_varint()
+            if self.response.closed:
+                break
             part_size = self._read_varint()
             part_data = self.response.read(part_size)
             yield UMPPart(part_type, part_size, part_data)
@@ -104,4 +106,4 @@ class UMPPartType(enum.IntEnum):
         return cls.UNKNOWN
 
 
-__all__ = ['UMPPart', 'UMPParser']
+__all__ = ['UMPPart', 'UMPParser', 'UMPPartType']

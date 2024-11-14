@@ -12,6 +12,7 @@ Experimental YouTube streaming features for yt-dlp.
     * [pip/pipx](#pippipx)
   * [Usage](#usage)
     * [UMP Downloader](#ump-downloader)
+    * [SABR Downloader](#sabr-downloader)
   * [Acknowledgements](#acknowledgements)
 <!-- TOC -->
 
@@ -80,7 +81,42 @@ Prioritize UMP formats:
 
 Debug UMP messages:
 
-`--extractor-args youtube:ump_debug=1`
+`--extractor-args "youtube:ump_debug=1;formats=ump"`
+
+
+### SABR Downloader
+
+Enable SABR formats:
+
+`--extractor-args youtube:formats=sabr`
+
+<!--
+Prioritize SABR formats:
+
+`-S proto:sabr`
+-->
+
+Debug SABR messages:
+
+`--extractor-args "youtube:sabr_debug=1;formats=sabr"`
+
+There are currently issues getting valid formats for ios. For now, it is recommended to use with a web client (`--extractor-args youtube:player-client=mweb`)
+
+Supports:
+- Standard video downloading
+  - Note: SABR does not natively support downloading only video stream, so an audio stream is always downloaded (but discarded)
+- Livestreams
+
+Not supported:
+- `--download-sections`
+- `--concurrent-fragments/-N`
+- Resume downloads
+
+
+See also:
+- [mitmproxy SABR parser script](utils/mitmproxy_sabrdump.py)
+- [Read SABR Request Python script](utils/read_sabr_request.py)
+- [Read SABR Response Python script](utils/read_sabr_response.py)
 
 
 ## Acknowledgements
