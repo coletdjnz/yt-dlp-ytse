@@ -19,6 +19,7 @@ Experimental YouTube streaming features for yt-dlp.
 ## Features
 
 - [UMP Downloader](#ump-downloader)
+- [SABR Downloader](#sabr-downloader)
 
 ## Installing
 
