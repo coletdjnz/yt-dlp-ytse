@@ -548,10 +548,6 @@ class SABRFD(FileDownloader):
         for idx, f in enumerate(requested_formats):
             sabr_config = f.get('_sabr_config')
             client_name = sabr_config.get('client_name')
-
-            # Group formats by client
-            # sabr_format_groups = { client_name: { server_abr_streaming_url: xyz, formats: [] } } }
-
             server_abr_streaming_url = f.get('url')
             video_playback_ustreamer_config = sabr_config.get('video_playback_ustreamer_config')
 
