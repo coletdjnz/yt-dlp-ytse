@@ -85,16 +85,6 @@ Debug UMP messages:
 
 ### SABR Downloader
 
-Supports:
-- Standard video downloading
-  - Note: SABR does not natively support downloading only video stream, so an audio stream is always downloaded (but discarded)
-- Livestreams
-
-Not supported:
-- `--download-sections`
-- `--concurrent-fragments/-N`
-- Resume downloads
-
 Enable SABR formats:
 
 `--extractor-args youtube:formats=sabr`
@@ -109,6 +99,17 @@ Debug SABR messages:
 
 `--extractor-args "youtube:sabr_debug=1;formats=sabr"`
 
+There are currently issues getting valid formats for ios. For now, it is recommended to use with a web client (`--extractor-args youtube:player-client=web`)
+
+Supports:
+- Standard video downloading
+  - Note: SABR does not natively support downloading only video stream, so an audio stream is always downloaded (but discarded)
+- Livestreams
+
+Not supported:
+- `--download-sections`
+- `--concurrent-fragments/-N`
+- Resume downloads
 
 
 See also:
