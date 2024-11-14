@@ -91,7 +91,7 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
         streaming_formats = traverse_obj(streaming_data, 'adaptiveFormats') or []
         PREFERRED_LANG_VALUE = 10
         for fmt in streaming_formats:
-            # ??
+            # todo: pass down to SABRFD
             # if fmt.get('targetDurationSec'):
             #     continue
 

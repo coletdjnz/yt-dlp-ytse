@@ -166,6 +166,8 @@ class SABRStream:
             self.write_sabr_debug(f'video_playback_ustreamer_config: {self.video_playback_ustreamer_config}')
             self.write_sabr_debug(f'Sending videoplayback SABR request: {vpabr}')
 
+            # todo: add retry logic for network errors
+            # For livestreams, if exceed retries, assume end of stream
             response = self._urlopen(
                 Request(
                     url=self.server_abr_streaming_url,

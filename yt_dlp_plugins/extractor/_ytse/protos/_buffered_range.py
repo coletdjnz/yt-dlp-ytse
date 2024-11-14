@@ -6,20 +6,20 @@ from ._time_range import TimeRange
 
 @protobug.message
 class Pa:
-    video_id: typing.Optional[protobug.String] = protobug.field(1)
-    lmt: typing.Optional[protobug.UInt64] = protobug.field(2)
+    video_id: typing.Optional[protobug.String] = protobug.field(1, default=None)
+    lmt: typing.Optional[protobug.UInt64] = protobug.field(2, default=None)
 
 
 @protobug.message
 class Kob:
-    EW: list[Pa] = protobug.field(1)
+    EW: list[Pa] = protobug.field(1, default_factory=list)
 
 
 @protobug.message
 class YPa:
-    field1: typing.Optional[protobug.Int32] = protobug.field(1)
-    field2: typing.Optional[protobug.Int32] = protobug.field(2)
-    field3: typing.Optional[protobug.Int32] = protobug.field(3)
+    field1: typing.Optional[protobug.Int32] = protobug.field(1, default=None)
+    field2: typing.Optional[protobug.Int32] = protobug.field(2, default=None)
+    field3: typing.Optional[protobug.Int32] = protobug.field(3, default=None)
 
 
 @protobug.message
@@ -30,7 +30,7 @@ class BufferedRange:
     start_segment_index: typing.Optional[protobug.Int32] = protobug.field(4, default=None)
     end_segment_index: typing.Optional[protobug.Int32] = protobug.field(5, default=None)
     time_range: typing.Optional[TimeRange] = protobug.field(6, default=None)
-    # field9: Kob = protobug.field(9)
-    # field11: YPa = protobug.field(11)
-    # field12: YPa = protobug.field(12)
+    field9: typing.Optional[Kob] = protobug.field(9, default=None)
+    field11: typing.Optional[YPa] = protobug.field(11, default=None)
+    field12: typing.Optional[YPa] = protobug.field(12, default=None)
 

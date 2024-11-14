@@ -8,7 +8,7 @@ class LiveMetadata:
     latest_sequence_duration_ms: typing.Optional[protobug.UInt64] = protobug.field(4)
 
     timestamp: typing.Optional[protobug.UInt64] = protobug.field(5)
-    unknown_field_10: typing.Optional[protobug.UInt32] = protobug.field(10)  # was thought to be target_duration_seconds, but doesn't seem to be
+    unknown_field_10: typing.Optional[protobug.UInt32] = protobug.field(10)  # maybe live status?
 
     dvr_start_duration: typing.Optional[protobug.UInt64] = protobug.field(12)  # earliest you can rewind the livestream
     dvr_start_timescale: typing.Optional[protobug.UInt32] = protobug.field(13)
