@@ -163,6 +163,7 @@ class SABRStream:
             )
             payload = protobug.dumps(vpabr)
 
+            self.write_sabr_debug(f'video_playback_ustreamer_config: {self.video_playback_ustreamer_config}')
             self.write_sabr_debug(f'Sending videoplayback SABR request: {vpabr}')
 
             response = self._urlopen(

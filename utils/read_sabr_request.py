@@ -1,5 +1,5 @@
 # usage: PYTHONPATH="." python utils/read_sabr_request.py /path/to/file
-
+import base64
 import sys
 from pprint import pprint
 
@@ -17,6 +17,7 @@ def read_and_print_vpar(file_path):
     try:
         vpar = protobug.loads(file_content, VideoPlaybackAbrRequest)
         pprint(vpar, width=120)
+        print(f'video_playback_ustreamer_config b64: {base64.b64encode(vpar.video_playback_ustreamer_config).decode()}')
         uf = list(unknown_fields(vpar))
         if uf:
             print(f'Unknown Fields: {uf}')

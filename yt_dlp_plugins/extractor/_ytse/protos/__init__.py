@@ -18,6 +18,7 @@ from ._buffered_range import BufferedRange
 from ._format_id import FormatId
 from ._streamer_context import StreamerContext, ClientInfo
 from ._time_range import TimeRange
+from ._selectable_formats import SelectableFormats
 
 
 def unknown_fields(obj: typing.Any, path=()) -> typing.Iterable[tuple[tuple[str, ...], dict[int, list]]]:

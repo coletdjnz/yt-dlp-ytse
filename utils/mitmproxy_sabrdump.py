@@ -19,7 +19,8 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     RequestCancellationPolicy,
     SabrSeek,
     LiveMetadata,
-    unknown_fields
+    unknown_fields,
+    SelectableFormats
 )
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType
 
@@ -100,6 +101,11 @@ class SABRParser:
                         lm = protobug.loads(part.data, LiveMetadata)
                         f.write(f'Live Metadata: {lm}\n')
                         write_unknown_fields(f, lm)
+
+                    elif part.part_type == UMPPartType.SELECTABLE_FORMATS:
+                        sf = protobug.loads(part.data, SelectableFormats)
+                        f.write(f'Selectable Formats: {sf}\n')
+                        write_unknown_fields(f, sf)
 
                     elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
                         f.write(f'Media Header Id: {part.data[0]}\n')
