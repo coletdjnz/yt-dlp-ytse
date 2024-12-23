@@ -11,6 +11,7 @@ import protobug
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request, Response
+from yt_dlp.networking.exceptions import HTTPError
 from yt_dlp.utils import parse_qs, traverse_obj, int_or_none, DownloadError
 from yt_dlp.utils._utils import _YDLLogger
 from yt_dlp.utils.progress import ProgressCalculator
@@ -168,15 +169,21 @@ class SABRStream:
 
             # todo: add retry logic for network errors
             # For livestreams, if exceed retries, assume end of stream
-            response = self._urlopen(
-                Request(
-                    url=self.server_abr_streaming_url,
-                    method='POST',
-                    data=payload,
-                    query={'rn': request_number},
-                    headers={'content-type': 'application/x-protobuf'}
+
+            try:
+                response = self._urlopen(
+                    Request(
+                        url=self.server_abr_streaming_url,
+                        method='POST',
+                        data=payload,
+                        query={'rn': request_number},
+                        headers={'content-type': 'application/x-protobuf'}
+                    )
                 )
-            )
+            except HTTPError as e:
+                self._logger.warning(f'HTTP Error: {e.status} - {e.reason}')
+                self.parse_ump_response(e.response)
+                raise DownloadError(f'HTTP Error: {e.status} - {e.reason}')
 
             self.parse_ump_response(response)
 
