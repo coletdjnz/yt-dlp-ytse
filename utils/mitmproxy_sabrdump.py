@@ -47,6 +47,7 @@ class SABRParser:
                 try:
                     vpar = protobug.loads(flow.request.raw_content, VideoPlaybackAbrRequest)
                     f.write(f'request body decoded: {vpar}\n')
+                    write_unknown_fields(f, vpar)
                 except:
                     print('not a sabr request')
 
