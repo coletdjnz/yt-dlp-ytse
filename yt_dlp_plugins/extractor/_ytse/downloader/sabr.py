@@ -291,6 +291,7 @@ class SABRStream:
                 self.process_sabr_seek(part)
             elif part.part_type == UMPPartType.SABR_ERROR:
                 self.process_sabr_error(part)
+            # TODO: implement SABR_CONTEXT_UPDATE
             else:
                 self.write_sabr_debug(f'Unhandled part type', part=part, data=part.data)
                 continue
@@ -372,6 +373,7 @@ class SABRStream:
             else:
                 # Attempt to keep in sync with livestream, as the segment duration target is not always perfect.
                 # The server seems to care more about the segment index than the duration.
+                # TODO: SABR_CONTEXT_UPDATE should be used to update the buffered range
                 if current_buffered_range.start_time_ms > start_ms:
                     raise DownloadError(f'Buffered range start time mismatch: {current_buffered_range.start_time_ms} > {start_ms}')
                 new_duration = (start_ms - current_buffered_range.start_time_ms) + duration_ms
