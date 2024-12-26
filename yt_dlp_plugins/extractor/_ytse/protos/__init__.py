@@ -21,6 +21,7 @@ from ._time_range import TimeRange
 from ._selectable_formats import SelectableFormats
 from ._prewarm_connection import PrewarmConnection
 from ._allowed_cached_formats import AllowedCachedFormats
+from ._sabr_context_update import SabrContextUpdate
 
 
 def unknown_fields(obj: typing.Any, path=()) -> typing.Iterable[tuple[tuple[str, ...], dict[int, list]]]:
