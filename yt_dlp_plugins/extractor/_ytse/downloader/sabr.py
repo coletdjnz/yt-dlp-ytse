@@ -126,31 +126,31 @@ class SABRStream:
         self._redirected = False
 
     def download(self):
-        # note: MEDIA_TYPE_VIDEO is no longer supported
-        media_type = ClientAbrState.MediaType.MEDIA_TYPE_DEFAULT
+        # note: video only is not supported
+        enabled_track_types_bitfield = 0  # Both
         if len(self._requested_video_formats) == 0:
-            media_type = ClientAbrState.MediaType.MEDIA_TYPE_AUDIO
+            enabled_track_types_bitfield = 1  # Audio only
 
         # todo: handle non-format-id format requests
-        selected_audio_format_ids = [f.format_id for f in self._requested_audio_formats]
-        selected_video_format_ids = [f.format_id for f in self._requested_video_formats]
+        selectable_audio_format_ids = [f.format_id for f in self._requested_audio_formats]
+        selectable_video_format_ids = [f.format_id for f in self._requested_video_formats]
 
         # initialize client abr state
         self.client_abr_state = ClientAbrState(
-            start_time_ms=0,  # current duration
-            media_type=media_type,
+            player_time_ms=0,
+            enabled_track_types_bitfield=enabled_track_types_bitfield,
         )
 
         requests_no_data = 0
 
         request_number = 0
-        while self.live_metadata or not self.total_duration_ms or self.client_abr_state.start_time_ms < self.total_duration_ms:
+        while self.live_metadata or not self.total_duration_ms or self.client_abr_state.player_time_ms < self.total_duration_ms:
             self._check_expiry()
             po_token = self.po_token_fn()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self.client_abr_state,
-                selected_video_format_ids=selected_video_format_ids,
-                selected_audio_format_ids=selected_audio_format_ids,
+                selectable_video_format_ids=selectable_video_format_ids,
+                selectable_audio_format_ids=selectable_audio_format_ids,
                 selected_format_ids=[
                     initialized_format.format_id for initialized_format in self.initialized_formats.values()
                 ],
@@ -213,7 +213,7 @@ class SABRStream:
 
             if not self._request_had_data:
                 if requests_no_data >= 2 and not self._redirected:  # todo: how to prevent youtube sending us in a redirect loop?
-                    if self.total_duration_ms and self.client_abr_state.start_time_ms < self.total_duration_ms:
+                    if self.total_duration_ms and self.client_abr_state.player_time_ms < self.total_duration_ms:
                         self._logger.warning('No data found in three consecutive requests - assuming end of video')
                     break  # stream finished?
                 requests_no_data += 1
@@ -229,14 +229,14 @@ class SABRStream:
 
             next_request_backoff_ms = (self.next_request_policy and self.next_request_policy.backoff_time_ms) or 0
 
-            self.client_abr_state.start_time_ms = max(
+            self.client_abr_state.player_time_ms = max(
                 min_buffered_duration_ms,
-                # next request policy backoff_time_ms is the minimum to increment start_time_ms by
-                self.client_abr_state.start_time_ms + next_request_backoff_ms,
+                # next request policy backoff_time_ms is the minimum to increment player_time_ms by
+                self.client_abr_state.player_time_ms + next_request_backoff_ms,
             )
 
-            if self.live_metadata and self.total_duration_ms and self.client_abr_state.start_time_ms >= self.total_duration_ms:
-                self.client_abr_state.start_time_ms = self.total_duration_ms
+            if self.live_metadata and self.total_duration_ms and self.client_abr_state.player_time_ms >= self.total_duration_ms:
+                self.client_abr_state.player_time_ms = self.total_duration_ms
                 wait_time = next_request_backoff_ms + self.live_segment_target_duration_sec * 1000
                 self.write_sabr_debug(f'sleeping {wait_time / 1000} seconds')
                 time.sleep(wait_time / 1000)
@@ -493,7 +493,7 @@ class SABRStream:
         seek_to = math.ceil((sabr_seek.start / sabr_seek.timescale) * 1000)
         self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
         self.write_sabr_debug(f'Seeking to {seek_to}ms')
-        self.client_abr_state.start_time_ms = seek_to
+        self.client_abr_state.player_time_ms = seek_to
         self.sabr_seeked = True
 
     def process_sabr_error(self, part: UMPPart):

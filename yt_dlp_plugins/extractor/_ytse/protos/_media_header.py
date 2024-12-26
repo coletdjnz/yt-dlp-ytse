@@ -27,4 +27,6 @@ class MediaHeader:
     content_length: typing.Optional[protobug.Int64] = protobug.field(14, default=None)
     time_range: typing.Optional[TimeRange] = protobug.field(15, default=None)
     timestamp: typing.Optional[protobug.Int32] = protobug.field(16, default=None)
+    unknown_field_17: typing.Optional[protobug.Int32] = protobug.field(17, default=None)  # seen = 17152, 65536
+    unknown_field_19: typing.Optional[protobug.Int32] = protobug.field(19, default=None)  # seen on ios = 1
 

@@ -15,6 +15,7 @@ class UMPPart:
 
 
 class UMPParser:
+    # TODO: Go over and clean this up, was generated without care
     def __init__(self, response: Response):
         self.response = response
 
