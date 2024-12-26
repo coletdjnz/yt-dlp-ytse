@@ -22,7 +22,8 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     SabrSeek,
     LiveMetadata,
     unknown_fields,
-    SelectableFormats
+    SelectableFormats,
+    PrewarmConnection
 )
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType
 
@@ -93,6 +94,11 @@ def print_sabr_parts(fp):
             sf = protobug.loads(part.data, SelectableFormats)
             print(f'Selectable Formats: {sf}')
             write_unknown_fields(f, sf)
+
+        elif part.part_type == UMPPartType.PREWARM_CONNECTION:
+            pc = protobug.loads(part.data, PrewarmConnection)
+            print(f'Prewarm Connection: {pc}')
+            write_unknown_fields(f, pc)
 
         elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
             print(f'Media Header Id: {part.data[0]}')
