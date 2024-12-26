@@ -7,12 +7,14 @@ import math
 import time
 import typing
 from typing import List
+from urllib.parse import urlparse
 import protobug
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
 from yt_dlp.networking import Request, Response
+from yt_dlp.networking.exceptions import HTTPError, TransportError
 from yt_dlp.utils import parse_qs, traverse_obj, int_or_none, DownloadError
-from yt_dlp.utils._utils import _YDLLogger
+from yt_dlp.utils._utils import _YDLLogger, update_url_query
 from yt_dlp.utils.progress import ProgressCalculator
 
 from yt_dlp_plugins.extractor._ytse.protos import (
@@ -120,6 +122,8 @@ class SABRStream:
         self.sabr_seeked = False
         self.live_segment_target_duration_sec = live_segment_target_duration_sec
         self._request_had_data = False
+        self._bad_hosts = []
+        self._redirected = False
 
     def download(self):
         # note: MEDIA_TYPE_VIDEO is no longer supported
@@ -168,25 +172,48 @@ class SABRStream:
 
             # todo: add retry logic for network errors
             # For livestreams, if exceed retries, assume end of stream
-            response = self._urlopen(
-                Request(
-                    url=self.server_abr_streaming_url,
-                    method='POST',
-                    data=payload,
-                    query={'rn': request_number},
-                    headers={'content-type': 'application/x-protobuf'}
-                )
-            )
 
-            self.parse_ump_response(response)
+            try:
+                response = self._urlopen(
+                    Request(
+                        url=self.server_abr_streaming_url,
+                        method='POST',
+                        data=payload,
+                        query={'rn': request_number},
+                        headers={'content-type': 'application/x-protobuf'}
+                    )
+                )
+
+            except HTTPError as e:
+                self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
+
+                # on 5xx errors, if a retry does not work, try falling back to another host?
+                # todo: add retry logic for 5xx errors
+                if 500 <= e.status < 600:
+                    self.process_player_fallback()
+                    continue
+
+                raise DownloadError(f'HTTP Error: {e.status} - {e.reason}')
+
+            except TransportError as e:
+                self._logger.warning(f'Transport Error: {e}')
+                self.process_player_fallback()
+                continue
+
+            try:
+                self.parse_ump_response(response)
+            except TransportError as e:
+                # Response read errors
+                self._logger.warning(f'Transport Error: {e}')
+                self.process_player_fallback()
 
             if len(self.header_ids):
                 self._logger.warning(f'Extraneous header IDs left: {list(self.header_ids.values())}')
                 self.header_ids.clear()
 
             if not self._request_had_data:
-                if requests_no_data >= 2:
-                    if self.client_abr_state.start_time_ms < self.total_duration_ms:
+                if requests_no_data >= 2 and not self._redirected:  # todo: how to prevent youtube sending us in a redirect loop?
+                    if self.total_duration_ms and self.client_abr_state.start_time_ms < self.total_duration_ms:
                         self._logger.warning('No data found in three consecutive requests - assuming end of video')
                     break  # stream finished?
                 requests_no_data += 1
@@ -208,7 +235,7 @@ class SABRStream:
                 self.client_abr_state.start_time_ms + next_request_backoff_ms,
             )
 
-            if self.live_metadata and self.client_abr_state.start_time_ms >= self.total_duration_ms:
+            if self.live_metadata and self.total_duration_ms and self.client_abr_state.start_time_ms >= self.total_duration_ms:
                 self.client_abr_state.start_time_ms = self.total_duration_ms
                 wait_time = next_request_backoff_ms + self.live_segment_target_duration_sec * 1000
                 self.write_sabr_debug(f'sleeping {wait_time / 1000} seconds')
@@ -217,6 +244,7 @@ class SABRStream:
             self.next_request_policy = None
             self.sabr_seeked = False
             self._request_had_data = False
+            self._redirected = False
 
             request_number += 1
 
@@ -392,6 +420,28 @@ class SABRStream:
             self._logger.warning('SABRRedirect: Invalid redirect URL retrieved. Download may fail.')
             return
         self.server_abr_streaming_url = sabr_redirect.redirect_url
+        self._redirected = True
+
+    def process_player_fallback(self):
+        # Attempt to fallback to another videoplayback host in the case the current one fails
+
+        qs = parse_qs(self.server_abr_streaming_url)
+        parsed_url = urlparse(self.server_abr_streaming_url)
+        self._bad_hosts.append(parsed_url.netloc)
+
+        for n in range(0, 5):
+            for fh in qs.get('mn', [])[0].split(','):
+                fallback = f'rr{n}---{fh}.googlevideo.com'
+                if fallback not in self._bad_hosts:
+                    fallback_count = int_or_none(qs.get('fallback_count', ['0'])[0], default=0) + 1
+                    self.server_abr_streaming_url = parsed_url._replace(netloc=fallback).geturl()
+                    self.server_abr_streaming_url = update_url_query(self.server_abr_streaming_url, {'fallback_count': fallback_count})
+                    self._logger.warning(f'Failed to connect to {parsed_url.netloc}. Retrying with {fallback}')
+                    self._redirected = True
+                    return
+
+        self._logger.debug(f'Player fallback failed - no working hosts available. Bad hosts: {self._bad_hosts}')
+        raise DownloadError('Player fallback failed')
 
     def _find_matching_requested_format(self, format_init_metadata: FormatInitializationMetadata):
         for requested_format in self._requested_audio_formats + self._requested_video_formats:
