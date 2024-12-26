@@ -430,7 +430,7 @@ class SABRStream:
         self._bad_hosts.append(parsed_url.netloc)
 
         for n in range(0, 5):
-            for fh in qs.get('mn', []):
+            for fh in qs.get('mn', [])[0].split(','):
                 fallback = f'rr{n}---{fh}.googlevideo.com'
                 if fallback not in self._bad_hosts:
                     fallback_count = int_or_none(qs.get('fallback_count', ['0'])[0], default=0) + 1
