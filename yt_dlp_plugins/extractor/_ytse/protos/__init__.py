@@ -20,6 +20,7 @@ from ._streamer_context import StreamerContext, ClientInfo
 from ._time_range import TimeRange
 from ._selectable_formats import SelectableFormats
 from ._prewarm_connection import PrewarmConnection
+from ._allowed_cached_formats import AllowedCachedFormats
 
 
 def unknown_fields(obj: typing.Any, path=()) -> typing.Iterable[tuple[tuple[str, ...], dict[int, list]]]:

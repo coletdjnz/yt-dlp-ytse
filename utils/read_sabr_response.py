@@ -23,7 +23,8 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     LiveMetadata,
     unknown_fields,
     SelectableFormats,
-    PrewarmConnection
+    PrewarmConnection,
+    AllowedCachedFormats
 )
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType
 
@@ -99,6 +100,11 @@ def print_sabr_parts(fp):
             pc = protobug.loads(part.data, PrewarmConnection)
             print(f'Prewarm Connection: {pc}')
             write_unknown_fields(f, pc)
+
+        elif part.part_type == UMPPartType.ALLOWED_CACHED_FORMATS:
+            acf = protobug.loads(part.data, AllowedCachedFormats)
+            print(f'Allowed Cached Formats: {acf}')
+            write_unknown_fields(f, acf)
 
         elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
             print(f'Media Header Id: {part.data[0]}')
