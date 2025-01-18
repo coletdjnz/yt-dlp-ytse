@@ -13,3 +13,4 @@ class PlaybackCookie:
     audio_fmt: typing.Optional[FormatId] = protobug.field(8, default=None)
     field14: typing.Optional[protobug.Int32] = protobug.field(14, default=None)
     field20: typing.Optional[protobug.Bytes] = protobug.field(20, default=None)
+    field25: typing.Optional[protobug.Int32] = protobug.field(25, default=None)  # seen on ios = 1
