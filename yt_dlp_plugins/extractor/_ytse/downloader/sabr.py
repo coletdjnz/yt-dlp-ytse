@@ -98,7 +98,7 @@ class SABRStream:
         po_token_fn: typing.Callable[[], str],
         client_info: ClientInfo,
         video_formats: List[FormatRequest] = None, audio_formats: List[FormatRequest] = None,
-        live_segment_target_duration_sec: int = 5,
+        live_segment_target_duration_sec: int = None,
         reload_config_fn: typing.Callable[[], tuple[str, str]] = None,
         debug=False,
     ):
@@ -120,7 +120,7 @@ class SABRStream:
         self.live_metadata: LiveMetadata = None
         self.total_duration_ms = None
         self.sabr_seeked = False
-        self.live_segment_target_duration_sec = live_segment_target_duration_sec
+        self.live_segment_target_duration_sec = live_segment_target_duration_sec or 5
         self._request_had_data = False
         self._bad_hosts = []
         self._redirected = False
@@ -141,9 +141,12 @@ class SABRStream:
             enabled_track_types_bitfield=enabled_track_types_bitfield,
         )
 
-        requests_no_data = 0
+        if self.live_segment_target_duration_sec:
+            self.write_sabr_debug(f'using live_segment_target_duration_sec: {self.live_segment_target_duration_sec}')
 
+        requests_no_data = 0
         request_number = 0
+
         while self.live_metadata or not self.total_duration_ms or self.client_abr_state.player_time_ms < self.total_duration_ms:
             self._check_expiry()
             po_token = self.po_token_fn()
@@ -166,7 +169,6 @@ class SABRStream:
                 ],
             )
             payload = protobug.dumps(vpabr)
-
             self.write_sabr_debug(f'video_playback_ustreamer_config: {self.video_playback_ustreamer_config}')
             self.write_sabr_debug(f'Sending videoplayback SABR request: {vpabr}')
 
@@ -266,7 +268,7 @@ class SABRStream:
         if data:
             msg += f' Data: {base64.b64encode(data).decode("utf-8")}'
         if self._debug:
-            self._logger.debug(f'SABR: {msg}')
+            self._logger.debug(f'SABR: {msg.strip()}')
 
     def parse_ump_response(self, response):
         ump = UMPParser(response)
@@ -318,11 +320,13 @@ class SABRStream:
         # Calculate duration of this segment
         # For videos, either duration_ms or time_range should be present
         # For live streams, calculate segment duration based on live metadata target segment duration
-        duration_ms = (
+        actual_duration_ms = (
             media_header.duration_ms
-            or (time_range and time_range.get_duration_ms())
-            or self.live_metadata and self.live_segment_target_duration_sec * 1000
-            or 0)
+            or (time_range and time_range.get_duration_ms()))
+
+        estimated_duration_ms = self.live_metadata and self.live_segment_target_duration_sec * 1000
+
+        duration_ms = actual_duration_ms or estimated_duration_ms or 0
 
         initialized_format.sequences[sequence_number or 0] = Sequence(
             format_id=media_header.format_id,
@@ -365,7 +369,7 @@ class SABRStream:
 
             current_buffered_range.end_segment_index = sequence_number
 
-            if not self.live_metadata:
+            if not self.live_metadata or actual_duration_ms:
                 # We need to increment both duration_ms and time_range.duration
                 current_buffered_range.duration_ms += duration_ms
                 current_buffered_range.time_range.duration += duration_ms
@@ -374,7 +378,8 @@ class SABRStream:
                 # The server seems to care more about the segment index than the duration.
                 if current_buffered_range.start_time_ms > start_ms:
                     raise DownloadError(f'Buffered range start time mismatch: {current_buffered_range.start_time_ms} > {start_ms}')
-                new_duration = (start_ms - current_buffered_range.start_time_ms) + duration_ms
+
+                new_duration = (start_ms - current_buffered_range.start_time_ms) + estimated_duration_ms
                 current_buffered_range.duration_ms = current_buffered_range.time_range.duration = new_duration
 
     def process_media(self, part: UMPPart):
@@ -641,6 +646,7 @@ class SABRFD(FileDownloader):
                 'height': sabr_config.get('height'),
                 'filename': f.get('filepath', filename),
                 'info_dict': f,
+                'target_duration_sec': sabr_config.get('target_duration_sec'),
             })
 
         for name, format_group in sabr_format_groups.items():
@@ -680,7 +686,8 @@ class SABRFD(FileDownloader):
                         write_callback=audio_format_writer.write
                     )],
                     client_info=format_group['client_info'],
-                    reload_config_fn=format_group['reload_config_fn']
+                    reload_config_fn=format_group['reload_config_fn'],
+                    live_segment_target_duration_sec=format_group.get('target_duration_sec'),
                 )
                 self._prepare_multiline_status(int(bool(audio_format and video_format)) + 1)
 
