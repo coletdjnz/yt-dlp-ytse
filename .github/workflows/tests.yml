@@ -2,13 +2,13 @@ name: Run Tests
 
 #on: [push, pull_request]
 
-on:
-  push:
-    branches-ignore:
-      - '*'
-  pull_request:
-    branches-ignore:
-      - '*'
+#on:
+#  push:
+#    branches-ignore:
+#      - '*'
+#  pull_request:
+#    branches-ignore:
+#      - '*'
 
 jobs:
   test:
