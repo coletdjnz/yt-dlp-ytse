@@ -13,5 +13,5 @@ class ContextUpdate:
 class SabrContextUpdate:
     unknown_field_1: typing.Optional[protobug.Int32] = protobug.field(1, default=None)  # seen = 2
     unknown_field_2: typing.Optional[protobug.Int32] = protobug.field(2, default=None)  # seen = 2
-    context_update: typing.Optional[ContextUpdate] = protobug.field(3, default_factory=ContextUpdate),
+    context_update: typing.Optional[ContextUpdate] = protobug.field(3, default_factory=ContextUpdate)
     unknown_field_4: typing.Optional[protobug.Int32] = protobug.field(4, default=None)  # seen = 1
