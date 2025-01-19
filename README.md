@@ -106,7 +106,7 @@ There are currently issues getting valid formats for ios. For now, it is recomme
 Supports:
 - Standard video downloading
   - Note: SABR does not natively support downloading only video stream, so an audio stream is always downloaded (but discarded)
-- Livestreams
+- Livestreams (including `--live-from-start`)
 
 Not supported:
 - `--download-sections`
