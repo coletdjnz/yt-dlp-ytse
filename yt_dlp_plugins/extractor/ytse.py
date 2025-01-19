@@ -211,6 +211,8 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
             if not single_stream:
                 continue
 
+            dct['is_from_start'] = live_status == 'is_live' and self.get_param('live_from_start')
+
             dct['_sabr_config'] = {
                 **sabr_config,
                 'itag': itag,
@@ -221,6 +223,11 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
             formats.append(dct)
 
         return formats
+
+    def _prepare_live_from_start_formats(self, formats, *args, **kwargs):
+        if traverse_obj(formats, (0, 'is_from_start')):
+            return
+        return super()._prepare_live_from_start_formats(formats, *args, **kwargs)
 
     def _list_formats(self, video_id, microformats, video_details, player_responses, player_url, duration=None):
         live_broadcast_details, live_status, streaming_data, formats, subtitles = super()._list_formats(video_id, microformats, video_details, player_responses, player_url, duration)
