@@ -100,6 +100,7 @@ class SABRStream:
         video_formats: List[FormatRequest] = None, audio_formats: List[FormatRequest] = None,
         live_segment_target_duration_sec: int = None,
         reload_config_fn: typing.Callable[[], tuple[str, str]] = None,
+        start_time_ms: int = 0,
         debug=False,
     ):
 
@@ -124,6 +125,7 @@ class SABRStream:
         self._request_had_data = False
         self._bad_hosts = []
         self._redirected = False
+        self._start_time_ms = start_time_ms
 
     def download(self):
         # note: video only is not supported
@@ -135,9 +137,10 @@ class SABRStream:
         selectable_audio_format_ids = [f.format_id for f in self._requested_audio_formats]
         selectable_video_format_ids = [f.format_id for f in self._requested_video_formats]
 
+        self.write_sabr_debug(f'starting at: {self._start_time_ms}')
         # initialize client abr state
         self.client_abr_state = ClientAbrState(
-            player_time_ms=0,
+            player_time_ms=self._start_time_ms,
             enabled_track_types_bitfield=enabled_track_types_bitfield,
         )
 
@@ -626,7 +629,9 @@ class SABRFD(FileDownloader):
                         client_name=innertube_client['INNERTUBE_CONTEXT_CLIENT_NAME'],
                         client_version=traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'clientVersion')),
                     ),
-                    'writers': []
+                    'writers': [],
+                    # Number.MAX_SAFE_INTEGER
+                    'start_time_ms': ((2**53) - 1) if info_dict.get('live_status') == 'is_live' and not f.get('is_from_start') else 0,
                 }
 
             else:
@@ -685,9 +690,10 @@ class SABRFD(FileDownloader):
                         height=audio_format['height'],
                         write_callback=audio_format_writer.write
                     )],
+                    start_time_ms=format_group['start_time_ms'],
                     client_info=format_group['client_info'],
                     reload_config_fn=format_group['reload_config_fn'],
-                    live_segment_target_duration_sec=format_group.get('target_duration_sec'),
+                    live_segment_target_duration_sec=format_group.get('target_duration_sec'),  # todo: should this be with the format request?
                 )
                 self._prepare_multiline_status(int(bool(audio_format and video_format)) + 1)
 
