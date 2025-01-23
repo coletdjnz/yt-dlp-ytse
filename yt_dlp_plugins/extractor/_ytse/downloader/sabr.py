@@ -628,6 +628,10 @@ class SABRFD(FileDownloader):
                     'client_info': ClientInfo(
                         client_name=innertube_client['INNERTUBE_CONTEXT_CLIENT_NAME'],
                         client_version=traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'clientVersion')),
+                        os_version=traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'osVersion')),
+                        os_name=traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'osName')),
+                        device_model=traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'deviceModel')),
+                        device_make=traverse_obj(innertube_client, ('INNERTUBE_CONTEXT', 'client', 'deviceMake')),
                     ),
                     'writers': [],
                     # Number.MAX_SAFE_INTEGER
