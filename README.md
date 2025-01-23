@@ -101,8 +101,6 @@ Debug SABR messages:
 
 `--extractor-args "youtube:sabr_debug=1;formats=sabr"`
 
-There are currently issues getting valid formats for ios. For now, it is recommended to use with a web client (`--extractor-args youtube:player-client=mweb`)
-
 Supports:
 - Standard video downloading
   - Note: SABR does not natively support downloading only video stream, so an audio stream is always downloaded (but discarded)
