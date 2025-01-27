@@ -4,7 +4,7 @@ from yt_dlp import traverse_obj, int_or_none, float_or_none, join_nonempty, NO_D
 from yt_dlp.extractor.openload import PhantomJSwrapper
 from yt_dlp.extractor.youtube import YoutubeIE, short_client_name
 from yt_dlp.jsinterp import JSInterpreter
-from yt_dlp.utils import update_url_query, qualities, str_or_none, parse_qs, ExtractorError, try_call, try_get, filesize_from_tbr, mimetype2ext, parse_codecs
+from yt_dlp.utils import update_url_query, qualities, str_or_none, parse_qs, ExtractorError, try_call, try_get, filesize_from_tbr, mimetype2ext, parse_codecs, determine_protocol
 
 import yt_dlp.downloader
 from yt_dlp_plugins.extractor._ytse.downloader.ump import UMPFD
@@ -18,7 +18,7 @@ yt_dlp.downloader.PROTOCOL_MAP['sabr'] = SABRFD
 
 
 def get_suitable_downloader(info_dict, params={}, default=NO_DEFAULT, protocol=None, to_stdout=False):
-    protocols = (protocol or info_dict['protocol']).split('+')
+    protocols = (protocol or determine_protocol(info_dict)).split('+')
     info_copy = info_dict.copy()
     info_copy['to_stdout'] = to_stdout
 
