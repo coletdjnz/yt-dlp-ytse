@@ -23,7 +23,7 @@ Experimental YouTube streaming features for yt-dlp.
 
 ## Installing
 
-**Requires yt-dlp `2024.10.22` or above.**
+**Requires yt-dlp `2025.01.26` or above.**
 
 If yt-dlp is installed through `pip` or `pipx`, you can install the plugin with the following:
 
