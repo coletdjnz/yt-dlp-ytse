@@ -12,7 +12,7 @@ from yt_dlp import DownloadError, int_or_none, traverse_obj
 from yt_dlp.networking import Request, Response
 from yt_dlp.networking.exceptions import HTTPError, TransportError
 from yt_dlp.utils import parse_qs, update_url_query
-from yt_dlp.utils._utils import _YDLLogger
+from yt_dlp.utils._utils import _YDLLogger, RetryManager
 
 from .protos import (
     ClientInfo,
@@ -107,7 +107,7 @@ class SABRStream:
         self._requested_audio_formats: List[FormatRequest] = audio_formats or []
         self.server_abr_streaming_url = server_abr_streaming_url
         self.video_playback_ustreamer_config = video_playback_ustreamer_config
-        self.po_token_fn = po_token_fn
+        self.get_po_token = po_token_fn
         self.reload_config_fn = reload_config_fn
         self.client_info = client_info
         self.client_abr_state: ClientAbrState = None
@@ -147,8 +147,8 @@ class SABRStream:
         request_number = 0
 
         while self.live_metadata or not self.total_duration_ms or self.client_abr_state.player_time_ms < self.total_duration_ms:
-            self._check_expiry()
-            po_token = self.po_token_fn()
+            self.process_expiry()
+            po_token = self.get_po_token()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self.client_abr_state,
                 selectable_video_format_ids=selectable_video_format_ids,
@@ -171,50 +171,57 @@ class SABRStream:
             self.write_sabr_debug(f'video_playback_ustreamer_config: {self.video_playback_ustreamer_config}')
             self.write_sabr_debug(f'Sending videoplayback SABR request: {vpabr}')
 
-            # todo: add retry logic for network errors
-            # For livestreams, if exceed retries, assume end of stream
-
+            # Attempt to retry the request if there is an intermittent network issue.
+            # Otherwise, it may be a server issue, so try to fall back to another host.
             try:
-                response = self._urlopen(
-                    Request(
-                        url=self.server_abr_streaming_url,
-                        method='POST',
-                        data=payload,
-                        query={'rn': request_number},
-                        headers={'content-type': 'application/x-protobuf'}
-                    )
-                )
+                # todo: configurable retries
+                for retry in RetryManager(3, self._report_retry):
+                    response = None
+                    try:
+                        response = self._urlopen(
+                            Request(
+                                url=self.server_abr_streaming_url,
+                                method='POST',
+                                data=payload,
+                                query={'rn': request_number},
+                                headers={'content-type': 'application/x-protobuf'}
+                            )
+                        )
+                        # Handle read errors too
+                        self.parse_ump_response(response)
+                    except TransportError as e:
+                        self._logger.warning(f'Transport Error: {e}')
+                        retry.error = e
+                        continue
+                    finally:
+                        # For when response is not entirely read, ensure it is closed.
+                        if response and not response.closed:
+                            response.close()
 
             except HTTPError as e:
                 self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
 
                 # on 5xx errors, if a retry does not work, try falling back to another host?
-                # todo: add retry logic for 5xx errors
                 if 500 <= e.status < 600:
-                    self.process_player_fallback()
+                    self.process_gvs_fallback()
                     continue
 
                 raise DownloadError(f'HTTP Error: {e.status} - {e.reason}')
 
             except TransportError as e:
                 self._logger.warning(f'Transport Error: {e}')
-                self.process_player_fallback()
+                self.process_gvs_fallback()
                 continue
-
-            try:
-                self.parse_ump_response(response)
-            except TransportError as e:
-                # Response read errors
-                self._logger.warning(f'Transport Error: {e}')
-                self.process_player_fallback()
 
             if len(self.header_ids):
                 self._logger.warning(f'Extraneous header IDs left: {list(self.header_ids.values())}')
                 self.header_ids.clear()
 
             if not self._request_had_data:
-                if requests_no_data >= 2 and not self._redirected:  # todo: how to prevent youtube sending us in a redirect loop?
+                # todo: how to prevent youtube sending us in a redirect loop?
+                if requests_no_data >= 2 and not self._redirected:
                     if self.total_duration_ms and self.client_abr_state.player_time_ms < self.total_duration_ms:
+                        # todo: test streams that go down temporary. Should we increase this?
                         self._logger.warning('No data found in three consecutive requests - assuming end of video')
                     break  # stream finished?
                 requests_no_data += 1
@@ -249,9 +256,13 @@ class SABRStream:
 
             request_number += 1
 
-            # The response should automatically close when all data is read, but just in case...
-            if not response.closed:
-                response.close()
+    def _report_retry(self, err, count, retries, fatal=True):
+        RetryManager.report_retry(
+            err, count, retries, info=self._logger.info,
+            warn=lambda msg: self._logger.warning(f'[download] Got error: {msg}'),
+            error=None if fatal else lambda msg: self._logger.warning(f'[download] Got error: {msg}'),
+            sleep_func=0  # todo: use sleep func configuration
+        )
 
     def write_sabr_debug(self, message=None, part=None, protobug_obj=None, data=None):
         msg = ''
@@ -426,26 +437,25 @@ class SABRStream:
         self.server_abr_streaming_url = sabr_redirect.redirect_url
         self._redirected = True
 
-    def process_player_fallback(self):
-        # Attempt to fallback to another videoplayback host in the case the current one fails
-
+    def process_gvs_fallback(self):
+        # Attempt to fall back to another GVS host in the case the current one fails
         qs = parse_qs(self.server_abr_streaming_url)
         parsed_url = urlparse(self.server_abr_streaming_url)
         self._bad_hosts.append(parsed_url.netloc)
 
-        for n in range(0, 5):
+        for n in range(1, 5):
             for fh in qs.get('mn', [])[0].split(','):
                 fallback = f'rr{n}---{fh}.googlevideo.com'
                 if fallback not in self._bad_hosts:
                     fallback_count = int_or_none(qs.get('fallback_count', ['0'])[0], default=0) + 1
-                    self.server_abr_streaming_url = parsed_url._replace(netloc=fallback).geturl()
-                    self.server_abr_streaming_url = update_url_query(self.server_abr_streaming_url, {'fallback_count': fallback_count})
-                    self._logger.warning(f'Failed to connect to {parsed_url.netloc}. Retrying with {fallback}')
+                    self.server_abr_streaming_url = update_url_query(
+                        parsed_url._replace(netloc=fallback).geturl(), {'fallback_count': fallback_count})
+                    self._logger.warning(f'Failed to connect to GVS host {parsed_url.netloc}. Retrying with GVS host {fallback}')
                     self._redirected = True
                     return
 
-        self._logger.debug(f'Player fallback failed - no working hosts available. Bad hosts: {self._bad_hosts}')
-        raise DownloadError('Player fallback failed')
+        self._logger.debug(f'GVS fallback failed - no working hosts available. Bad hosts: {self._bad_hosts}')
+        raise DownloadError('Unable to find a working Google Video Server. Is your connection okay?')
 
     def _find_matching_requested_format(self, format_init_metadata: FormatInitializationMetadata):
         for requested_format in self._requested_audio_formats + self._requested_video_formats:
@@ -505,23 +515,25 @@ class SABRStream:
         self.write_sabr_debug(part=part, protobug_obj=sabr_error, data=part.data)
         raise DownloadError(f'SABR Returned Error: {sabr_error}')
 
-    def _check_expiry(self):
+    def process_expiry(self):
         expires_at = int_or_none(traverse_obj(parse_qs(self.server_abr_streaming_url), ('expire', 0), get_all=False))
 
         if not expires_at:
-            self.write_sabr_debug('No expiry found in server ABR streaming URL. Will not be able to refresh.')
+            self.write_sabr_debug('No expiry found in SABR streaming URL. Will not be able to refresh.')
             return
 
         if expires_at - 300 >= time.time():
-            self.write_sabr_debug(f'videoplayback url expires in {int(expires_at - time.time())} seconds')
+            self.write_sabr_debug(f'SABR streaming url expires in {int(expires_at - time.time())} seconds')
             return
 
-        self.write_sabr_debug('Refreshing server ABR streaming URL')
+        self.write_sabr_debug('Refreshing SABR streaming URL')
 
         if not self.reload_config_fn:
             raise self._logger.warning(
-                'No reload config function found - cannot refresh server ABR streaming URL.'
+                'No reload config function found - cannot refresh SABR streaming URL.'
                 ' The url will expire in 5 minutes and the download will fail.')
 
-        # todo: handle errors here and fail gracefully to shutdown the stream
-        self.server_abr_streaming_url, self.video_playback_ustreamer_config = self.reload_config_fn()
+        try:
+            self.server_abr_streaming_url, self.video_playback_ustreamer_config = self.reload_config_fn()
+        except (TransportError, HTTPError) as e:
+            raise DownloadError(f'Failed to refresh SABR streaming URL: {e}') from e
