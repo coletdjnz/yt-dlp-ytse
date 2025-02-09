@@ -119,7 +119,6 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
             'video_playback_ustreamer_config': video_playback_ustreamer_config,
             'po_token': po_token,
             'client_name': client_name,
-            'innertube_context': traverse_obj(player_response, 'responseContext'),
             'reload_config_fn': lambda: self._reload_sabr_config(video_id, client_name),
         }
 
