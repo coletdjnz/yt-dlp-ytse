@@ -9,7 +9,6 @@ import protobug
 from mitmproxy import http
 from yt_dlp.networking import Response
 
-from yt_dlp_plugins.extractor._ytse.downloader.sabr import UMPParser
 from yt_dlp_plugins.extractor._ytse.protos import (
     MediaHeader,
     SabrRedirect,
@@ -26,7 +25,7 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     PrewarmConnection,
     AllowedCachedFormats
 )
-from yt_dlp_plugins.extractor._ytse.ump import UMPPartType
+from yt_dlp_plugins.extractor._ytse.ump import UMPPartType, UMPParser
 
 
 def write_unknown_fields(f, protobug_obj):
