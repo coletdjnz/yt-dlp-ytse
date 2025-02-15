@@ -23,7 +23,7 @@ Experimental YouTube streaming features for yt-dlp.
 
 ## Installing
 
-**Requires yt-dlp `2024.10.22` or above.**
+**Requires yt-dlp `2025.01.26` or above.**
 
 If yt-dlp is installed through `pip` or `pipx`, you can install the plugin with the following:
 
@@ -101,12 +101,10 @@ Debug SABR messages:
 
 `--extractor-args "youtube:sabr_debug=1;formats=sabr"`
 
-There are currently issues getting valid formats for ios. For now, it is recommended to use with a web client (`--extractor-args youtube:player-client=mweb`)
-
 Supports:
 - Standard video downloading
   - Note: SABR does not natively support downloading only video stream, so an audio stream is always downloaded (but discarded)
-- Livestreams
+- Livestreams (including `--live-from-start`)
 
 Not supported:
 - `--download-sections`

@@ -1,10 +1,33 @@
 import re
 import sys
-from yt_dlp import traverse_obj, int_or_none, float_or_none, join_nonempty, NO_DEFAULT
+
 from yt_dlp.extractor.openload import PhantomJSwrapper
-from yt_dlp.extractor.youtube import YoutubeIE, short_client_name
+from yt_dlp.extractor.youtube import (
+    YoutubeIE,
+    short_client_name,
+    STREAMING_DATA_INITIAL_PO_TOKEN,
+    STREAMING_DATA_CLIENT_NAME,
+    _PoTokenContext
+)
 from yt_dlp.jsinterp import JSInterpreter
-from yt_dlp.utils import update_url_query, qualities, str_or_none, parse_qs, ExtractorError, try_call, try_get, filesize_from_tbr, mimetype2ext, parse_codecs
+from yt_dlp.utils import (
+    ExtractorError,
+    NO_DEFAULT,
+    determine_protocol,
+    filesize_from_tbr,
+    float_or_none,
+    int_or_none,
+    join_nonempty,
+    mimetype2ext,
+    parse_codecs,
+    parse_qs,
+    qualities,
+    str_or_none,
+    try_call,
+    try_get,
+    update_url_query,
+)
+from yt_dlp.utils.traversal import traverse_obj
 
 import yt_dlp.downloader
 from yt_dlp_plugins.extractor._ytse.downloader.ump import UMPFD
@@ -18,7 +41,7 @@ yt_dlp.downloader.PROTOCOL_MAP['sabr'] = SABRFD
 
 
 def get_suitable_downloader(info_dict, params={}, default=NO_DEFAULT, protocol=None, to_stdout=False):
-    protocols = (protocol or info_dict['protocol']).split('+')
+    protocols = (protocol or determine_protocol(info_dict)).split('+')
     info_copy = info_dict.copy()
     info_copy['to_stdout'] = to_stdout
 
@@ -52,8 +75,30 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
 
         raise ExtractorError('No SABR formats found', expected=True)
 
-    def _extract_sabr_formats(self, video_id, player_response, player_url, live_status, duration):
+    def _process_n_param(self, gvs_url, video_id, player_url):
+        query = parse_qs(gvs_url)
+        if query.get('n'):
+            try:
+                return update_url_query(gvs_url, {'n': self._decrypt_nsig(query['n'][0], video_id, player_url)})
+            except ExtractorError as e:
+                phantomjs_hint = ''
+                if isinstance(e, JSInterpreter.Exception):
+                    phantomjs_hint = (
+                        f'         Install {self._downloader._format_err("PhantomJS", self._downloader.Styles.EMPHASIS)} '
+                        f'to workaround the issue. {PhantomJSwrapper.INSTALL_HINT}\n')
+                if player_url:
+                    self.report_warning(
+                        f'nsig extraction failed: Some formats may be missing\n{phantomjs_hint}'
+                        f'         n = {query["n"][0]} ; player = {player_url}', video_id=video_id, only_once=True)
+                    self.write_debug(e, only_once=True)
+                else:
+                    self.report_warning(
+                        'Cannot decrypt nsig without player_url: Some formats may be missing',
+                        video_id=video_id, only_once=True)
+        return gvs_url
 
+    def _extract_sabr_formats(self, video_id, player_response, player_url, live_status, duration):
+        # xxx: the upstream _extract_formats_and_subtitles should really be broken up into reusable functions
         formats = []
 
         # Extract SABR formats from one player response
@@ -61,19 +106,19 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
         if not streaming_data:
             return formats
 
-        server_abr_streaming_url = streaming_data.get('serverAbrStreamingUrl')
+        server_abr_streaming_url = self._process_n_param(streaming_data.get('serverAbrStreamingUrl'), video_id, player_url)
+
         video_playback_ustreamer_config = traverse_obj(player_response, ('playerConfig', 'mediaCommonConfig', 'mediaUstreamerRequestConfig', 'videoPlaybackUstreamerConfig'))
         if not server_abr_streaming_url or not video_playback_ustreamer_config:
             return formats
 
-        client_name = streaming_data.get('__yt_dlp_client')
-        po_token = streaming_data.get('__yt_dlp_po_token')
+        client_name = streaming_data.get(STREAMING_DATA_CLIENT_NAME)
+        po_token = streaming_data.get(STREAMING_DATA_INITIAL_PO_TOKEN)
 
         sabr_config = {
             'video_playback_ustreamer_config': video_playback_ustreamer_config,
             'po_token': po_token,
             'client_name': client_name,
-            'innertube_context': traverse_obj(player_response, 'responseContext'),
             'reload_config_fn': lambda: self._reload_sabr_config(video_id, client_name),
         }
 
@@ -126,29 +171,7 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
             # if fmt.get('type') == 'FORMAT_STREAM_TYPE_OTF':
             #     continue
 
-            fmt_url = server_abr_streaming_url
-            query = parse_qs(fmt_url)
-            if query.get('n'):
-                try:
-                    decrypt_nsig = self._cached(self._decrypt_nsig, 'nsig', query['n'][0])
-                    fmt_url = update_url_query(fmt_url, {
-                        'n': decrypt_nsig(query['n'][0], video_id, player_url),
-                    })
-                except ExtractorError as e:
-                    phantomjs_hint = ''
-                    if isinstance(e, JSInterpreter.Exception):
-                        phantomjs_hint = (f'         Install {self._downloader._format_err("PhantomJS", self._downloader.Styles.EMPHASIS)} '
-                                          f'to workaround the issue. {PhantomJSwrapper.INSTALL_HINT}\n')
-                    if player_url:
-                        self.report_warning(
-                            f'nsig extraction failed: Some formats may be missing\n{phantomjs_hint}'
-                            f'         n = {query["n"][0]} ; player = {player_url}', video_id=video_id, only_once=True)
-                        self.write_debug(e, only_once=True)
-                    else:
-                        self.report_warning(
-                            'Cannot decrypt nsig without player_url: Some formats may be missing',
-                            video_id=video_id, only_once=True)
-                    continue
+
 
             tbr = float_or_none(fmt.get('averageBitrate') or fmt.get('bitrate'), 1000)
             format_duration = traverse_obj(fmt, ('approxDurationMs', {lambda x: float_or_none(x, 1000)}))
@@ -161,12 +184,15 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
                 self.report_warning(
                     f'{video_id}: Some formats are possibly damaged. They will be deprioritized', only_once=True)
 
-            # Clients that require PO Token
-            is_broken = (not po_token and self._get_default_ytcfg(client_name).get('REQUIRE_PO_TOKEN'))
-            if is_broken:
-                self.report_warning(
-                    f'{video_id}: {client_name} client formats require a PO Token which was not provided. '
-                    'They will be deprioritized as they may yield HTTP Error 403', only_once=True)
+            # Clients that require PO Token return videoplayback URLs that may return 403
+            require_po_token = (
+                    not po_token
+                    and _PoTokenContext.GVS in self._get_default_ytcfg(client_name)['PO_TOKEN_REQUIRED_CONTEXTS']
+                    and itag not in ['18'])  # these formats do not require PO Token
+
+            if require_po_token and 'missing_pot' not in self._configuration_arg('formats'):
+                self._report_pot_format_skipped(video_id, client_name, 'sabr')
+                continue
 
             name = fmt.get('qualityLabel') or quality.replace('audio_quality_', '') or ''
             fps = int_or_none(fmt.get('fps')) or 0
@@ -179,7 +205,7 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
                     name, fmt.get('isDrc') and 'DRC',
                     try_get(fmt, lambda x: x['projectionType'].replace('RECTANGULAR', '').lower()),
                     try_get(fmt, lambda x: x['spatialAudioType'].replace('SPATIAL_AUDIO_TYPE_', '').lower()),
-                    is_damaged and 'DAMAGED', is_broken and 'BROKEN',
+                    is_damaged and 'DAMAGED', require_po_token and 'MISSING POT',
                     (self.get_param('verbose')) and short_client_name(client_name),
                     delim=', '),
                 'source_preference': -1 + (100 if 'Premium' in name else 0),
@@ -190,12 +216,12 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
                 'has_drm': bool(fmt.get('drmFamilies')),
                 'tbr': tbr,
                 'filesize_approx': filesize_from_tbr(tbr, format_duration),
-                'url': fmt_url,
+                'url': server_abr_streaming_url,
                 'width': int_or_none(fmt.get('width')),
                 'language': join_nonempty(language_code, 'desc' if is_descriptive else '') or None,
                 'language_preference': PREFERRED_LANG_VALUE if is_default else -10 if is_descriptive else -1,
                 # Strictly de-prioritize broken, damaged and 3gp formats
-                'preference': -20 if is_broken else -10 if is_damaged else -2 if itag == '17' else None,
+                'preference': -20 if require_po_token else -10 if is_damaged else -2 if itag == '17' else None,
                 'protocol': 'sabr'
             }
             mime_mobj = re.match(
@@ -211,15 +237,23 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
             if not single_stream:
                 continue
 
+            dct['is_from_start'] = live_status == 'is_live' and self.get_param('live_from_start')
+
             dct['_sabr_config'] = {
                 **sabr_config,
                 'itag': itag,
                 'last_modified': fmt.get('lastModified'),
+                'target_duration_sec': fmt.get('targetDurationSec'),
             }
 
             formats.append(dct)
 
         return formats
+
+    def _prepare_live_from_start_formats(self, formats, *args, **kwargs):
+        if traverse_obj(formats, (0, 'is_from_start')):
+            return
+        return super()._prepare_live_from_start_formats(formats, *args, **kwargs)
 
     def _list_formats(self, video_id, microformats, video_details, player_responses, player_url, duration=None):
         live_broadcast_details, live_status, streaming_data, formats, subtitles = super()._list_formats(video_id, microformats, video_details, player_responses, player_url, duration)
