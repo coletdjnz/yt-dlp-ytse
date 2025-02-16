@@ -45,7 +45,8 @@ class ClientInfo:
 
 
 @protobug.message
-class SentSabrContextUpdate:
+class SabrContext:
+    # Type and Value from a SabrContextUpdate
     type: typing.Optional[protobug.Int32] = protobug.field(1, default=None)
     value: typing.Optional[protobug.Bytes] = protobug.field(2, default=None)
 
@@ -68,10 +69,9 @@ class StreamerContext:
     po_token: typing.Optional[protobug.Bytes] = protobug.field(2, default=None)
     playback_cookie: typing.Optional[protobug.Bytes] = protobug.field(3, default=None)
     gp: typing.Optional[protobug.Bytes] = protobug.field(4, default=None)
-    # referred to as "stmctxt". Seems to be the SABR context updates (ad updates) that were applied (sendByDefault was True)
-    # Also applied for sabr context updates contained within TIMELINE_CONTEXT
-    sent_sabr_context_updates: list[SentSabrContextUpdate] = protobug.field(5, default_factory=list)
-    # referred to as "unsntctxt". Is the type in the SABR Context update that was not sent (sendByDefault was False)
-    unsent_sabr_context_update_types: list[protobug.Int32] = protobug.field(6, default_factory=list)
+    # referred to as "stmctxt". Seems to be the SABR context updates (ad updates) to apply?
+    sabr_contexts: list[SabrContext] = protobug.field(5, default_factory=list)
+    # referred to as "unsntctxt". Is the type in the SABR Context update that was not sent (e.g. sendByDefault is False)
+    unsent_sabr_contexts: list[protobug.Int32] = protobug.field(6, default_factory=list)
     field7: typing.Optional[protobug.String] = protobug.field(7, default=None)
     field8: typing.Optional[Gqa] = protobug.field(8, default=None)
