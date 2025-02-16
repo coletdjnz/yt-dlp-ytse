@@ -5,17 +5,18 @@ from . import SabrContextUpdate
 
 @protobug.message
 class rkH:
-    S8: typing.Optional[protobug.String] = protobug.field(1, default=None)
-    Xn: typing.Optional[protobug.Int32] = protobug.field(2, default=None)
-    ZJ2: typing.Optional[protobug.Int32] = protobug.field(3, default=None)
-    sj: typing.Optional[protobug.Int32] = protobug.field(4, default=None)
-    GU: typing.Optional[protobug.Int32] = protobug.field(5, default=None)
-    wE: typing.Optional[protobug.Int32] = protobug.field(6, default=None)
+    video_id: typing.Optional[protobug.String] = protobug.field(1, default=None) # videoId
+    Xn: typing.Optional[protobug.Int32] = protobug.field(2, default=None)  # pst (playback start time?)
+    ZJ2: typing.Optional[protobug.Int32] = protobug.field(3, default=None) # lst (last seen time?)
+    sj: typing.Optional[protobug.Int32] = protobug.field(4, default=None) # ld (load duration?)
+    GU: typing.Optional[protobug.Int32] = protobug.field(5, default=None) # ls (last seen?)
+    wE: typing.Optional[protobug.Int32] = protobug.field(6, default=None) # ps (playback speed/state?)
+
 
 
 @protobug.message
 class i8V:
-    L4: typing.Optional[protobug.Int32] = protobug.field(1, default=None)
+    L4: typing.Optional[protobug.Int32] = protobug.field(1, default=None) # nonv
 
 
 @protobug.message
@@ -27,8 +28,8 @@ class Clip:
 
 @protobug.message
 class Timeline:
-    clip: typing.Optional[Clip] = protobug.field(1, default=None)
-    j2E: typing.Optional[protobug.String] = protobug.field(2, default=None)
+    clip: list[Clip] = protobug.field(1, default_factory=list)
+    version: typing.Optional[protobug.String] = protobug.field(2, default=None)
 
 
 @protobug.message
