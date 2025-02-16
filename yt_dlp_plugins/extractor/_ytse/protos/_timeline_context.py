@@ -6,11 +6,11 @@ from . import SabrContextUpdate
 @protobug.message
 class rkH:
     video_id: typing.Optional[protobug.String] = protobug.field(1, default=None) # videoId
-    Xn: typing.Optional[protobug.Int32] = protobug.field(2, default=None)  # pst (playback start time?)
-    ZJ2: typing.Optional[protobug.Int32] = protobug.field(3, default=None) # lst (last seen time?)
-    sj: typing.Optional[protobug.Int32] = protobug.field(4, default=None) # ld (load duration?)
-    GU: typing.Optional[protobug.Int32] = protobug.field(5, default=None) # ls (last seen?)
-    wE: typing.Optional[protobug.Int32] = protobug.field(6, default=None) # ps (playback speed/state?)
+    pst: typing.Optional[protobug.Int32] = protobug.field(2, default=None)  # time - playback start time?
+    lst: typing.Optional[protobug.Int32] = protobug.field(3, default=None) # lst
+    ld: typing.Optional[protobug.Int32] = protobug.field(4, default=None) # duration
+    ls: typing.Optional[protobug.Int32] = protobug.field(5, default=None) # scale for ld
+    ps: typing.Optional[protobug.Int32] = protobug.field(6, default=None) # scale for pst
 
 
 
