@@ -25,7 +25,8 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     SabrContextUpdate,
     SabrContextSendingPolicy,
     TimelineContext,
-    ReloadPlayerResponse
+    ReloadPlayerResponse,
+    PlaybackDebugInfo
 )
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType, UMPParser
 
@@ -142,6 +143,11 @@ class SABRParser:
                         rpr = protobug.loads(part.data, ReloadPlayerResponse)
                         f.write(f'Reload Player Response: {rpr}\n')
                         write_unknown_fields(f, rpr)
+
+                    elif part.part_type == UMPPartType.PLAYBACK_DEBUG_INFO:
+                        pdi = protobug.loads(part.data, PlaybackDebugInfo)
+                        f.write(f'Playback Debug Info: {pdi}\n')
+                        write_unknown_fields(f, pdi)
 
 
                     elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
