@@ -23,7 +23,10 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     unknown_fields,
     SelectableFormats,
     PrewarmConnection,
-    AllowedCachedFormats
+    AllowedCachedFormats,
+    SabrContextUpdate,
+    SabrContextSendingPolicy,
+    TimelineContext
 )
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType, UMPParser
 
@@ -104,6 +107,21 @@ def print_sabr_parts(fp):
             acf = protobug.loads(part.data, AllowedCachedFormats)
             print(f'Allowed Cached Formats: {acf}')
             write_unknown_fields(f, acf)
+
+        elif part.part_type == UMPPartType.SABR_CONTEXT_UPDATE:
+            scu = protobug.loads(part.data, SabrContextUpdate)
+            print(f'Sabr Context Update: {scu}')
+            write_unknown_fields(f, scu)
+
+        elif part.part_type == UMPPartType.SABR_CONTEXT_SENDING_POLICY:
+            scsp = protobug.loads(part.data, SabrContextSendingPolicy)
+            print(f'Sabr Context Sending Policy: {scsp}')
+            write_unknown_fields(f, scsp)
+
+        elif part.part_type == UMPPartType.TIMELINE_CONTEXT:
+            tc = protobug.loads(part.data, TimelineContext)
+            print(f'Timeline Context: {tc}')
+            write_unknown_fields(f, tc)
 
         elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
             print(f'Media Header Id: {part.data[0]}')
