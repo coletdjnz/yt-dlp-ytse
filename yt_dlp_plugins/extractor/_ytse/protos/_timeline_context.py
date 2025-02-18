@@ -1,6 +1,6 @@
 import typing
 import protobug
-from . import SabrContextUpdate
+from ._sabr_context_update import SabrContextUpdate
 
 
 @protobug.message
@@ -32,7 +32,8 @@ class Timeline:
     version: typing.Optional[protobug.String] = protobug.field(2, default=None)
 
 
+# Looks like this may be used for SSAP to update the visible timeline + provide a SABR context override to switch to the ad?
 @protobug.message
 class TimelineContext:
-    timeline: typing.Optional[Timeline] = protobug.field(1, default=None)  # may be a list, todo: confirm
+    timeline: typing.Optional[Timeline] = protobug.field(1, default=None)
     sabr_context_update: typing.Optional[SabrContextUpdate] = protobug.field(2, default=None)

@@ -1,14 +1,13 @@
 import typing
 import protobug
-from ._buffered_range import BufferedRange
 
 
 # @protobug.message
-# class ContextUpdate:
+# class ExampleTypeTwoContextUpdate:
 #     # At least appears to match BufferedRange pb...
 #     buffered_ranges: list[BufferedRange] = protobug.field(1, default_factory=list)
 
-# May be used in:
+# May be provided in:
 # - mediaCommonConfig in Innertube config
 # - SABR_CONTEXT_UPDATE
 # - TIMELINE_CONTEXT
@@ -32,7 +31,7 @@ class SabrContextUpdate:
     type: typing.Optional[protobug.Int32] = protobug.field(1, default=None)  # seen = 2
     scope: typing.Optional[SabrContextScope] = protobug.field(2, default=None) # seen = 2 (SABR_CONTEXT_SCOPE_REQUEST?)
 
-    # May be base64 encoded, but not always
+    # note: may be base64 encoded
     value: typing.Optional[protobug.Bytes] = protobug.field(3, default=None)
     send_by_default: typing.Optional[protobug.Bool] = protobug.field(4, default=None)  # seen = True
     write_policy: typing.Optional[SabrContextWritePolicy] = protobug.field(5, default=None)
