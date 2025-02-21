@@ -41,21 +41,21 @@ def write_unknown_fields(f, protobug_obj):
 class SABRParser:
     def response(self, flow: http.HTTPFlow) -> None:
         if "application/vnd.yt-ump" in flow.response.headers.get("Content-Type", ""):
-            res = Response(fp=io.BytesIO(flow.response.raw_content), url=flow.request.url, headers={})
+            res = Response(fp=io.BytesIO(flow.response.content), url=flow.request.url, headers={})
             parser = UMPParser(res)
             rn = flow.request.query.get("rn")
             n = flow.request.query.get("n")
 
             with open(f'dumps/{rn}-{n}.dump', 'w') as f:
                 f.write(f'URL: {flow.request.url}\n')
-                f.write(f'request body base64: {base64.b64encode(flow.request.raw_content).decode("utf-8")}\n')
+                f.write(f'request body base64: {base64.b64encode(flow.request.content).decode("utf-8")}\n')
 
                 try:
-                    vpar = protobug.loads(flow.request.raw_content, VideoPlaybackAbrRequest)
+                    vpar = protobug.loads(flow.request.content, VideoPlaybackAbrRequest)
                     f.write(f'request body decoded: {vpar}\n')
                     write_unknown_fields(f, vpar)
-                except:
-                    print('not a sabr request')
+                except Exception as e:
+                    print(f'not a sabr request: ({e})')
 
                 for part in parser.iter_parts():
                     print(f'Part type: {part.part_type}, Part size: {part.size}')
