@@ -14,7 +14,7 @@ class MediaHeader:
     header_id: typing.Optional[protobug.UInt32] = protobug.field(1, default=None)
     video_id: typing.Optional[protobug.String] = protobug.field(2, default=None)
     itag: typing.Optional[protobug.Int32] = protobug.field(3, default=None)
-    lmt: typing.Optional[protobug.UInt64] = protobug.field(4, default=None)
+    last_modified: typing.Optional[protobug.UInt64] = protobug.field(4, default=None)
     xtags: typing.Optional[protobug.String] = protobug.field(5, default=None)
     start_data_range: typing.Optional[protobug.Int32] = protobug.field(6, default=None)
     compression: typing.Optional[Compression] = protobug.field(7, default=None)
