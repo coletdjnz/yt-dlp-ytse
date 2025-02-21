@@ -45,8 +45,9 @@ class SABRParser:
             parser = UMPParser(res)
             rn = flow.request.query.get("rn")
             n = flow.request.query.get("n")
+            expire = flow.request.query.get("expire")
 
-            with open(f'dumps/{rn}-{n}.dump', 'w') as f:
+            with open(f'dumps/{n or expire}-{rn}.dump', 'w') as f:
                 f.write(f'URL: {flow.request.url}\n')
                 f.write(f'request body base64: {base64.b64encode(flow.request.content).decode("utf-8")}\n')
 
