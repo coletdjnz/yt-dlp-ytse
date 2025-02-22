@@ -273,6 +273,19 @@ class KidsAppInfo:
     category_settings: typing.Optional[KidsCategorySettings] = protobug.field(3, default=None)
     user_education_settings: typing.Optional[protobug.Bytes] = protobug.field(4, default=None)
 
+
+@protobug.message
+class StoreDigitalGoodsApiSupportStatus:
+
+    class Status(protobug.Enum, strict=False):
+        # Unconfirmed proto mapping
+        DIGITAL_GOODS_API_SUPPORT_STATUS_UNKNOWN = 0
+        DIGITAL_GOODS_API_SUPPORT_STATUS_SUPPORTED = 1
+        DIGITAL_GOODS_API_SUPPORT_STATUS_UNSUPPORTED = 2
+
+    play_store_digital_goods_api_support_status: typing.Optional[protobug.Bool] = protobug.field(1, default=None)
+
+
 @protobug.message
 class MusicAppInfo:
 
@@ -283,6 +296,45 @@ class MusicAppInfo:
         WEB_DISPLAY_MODE_MINIMAL_UI = 2
         WEB_DISPLAY_MODE_STANDALONE = 3
         WEB_DISPLAY_MODE_FULLSCREEN = 4
+
+    class MusicLocationMasterSwitch(protobug.Enum, strict=False):
+        # Unconfirmed proto mapping
+        MUSIC_LOCATION_MASTER_SWITCH_UNKNOWN = 0
+        MUSIC_LOCATION_MASTER_SWITCH_INDETERMINATE = 1
+        MUSIC_LOCATION_MASTER_SWITCH_ENABLED = 2
+        MUSIC_LOCATION_MASTER_SWITCH_DISABLED = 3
+
+    class MusicActivityMasterSwitch(protobug.Enum, strict=False):
+        # Unconfirmed proto mapping
+        MUSIC_ACTIVITY_MASTER_SWITCH_UNKNOWN = 0
+        MUSIC_ACTIVITY_MASTER_SWITCH_INDETERMINATE = 1
+        MUSIC_ACTIVITY_MASTER_SWITCH_ENABLED = 2
+        MUSIC_ACTIVITY_MASTER_SWITCH_DISABLED = 3
+
+    class PwaInstallabilityStatus(protobug.Enum, strict=False):
+        # Unconfirmed proto mapping
+        PWA_INSTALLABILITY_STATUS_UNKNOWN = 0
+        PWA_INSTALLABILITY_STATUS_CAN_BE_INSTALLED = 1
+
+    class MusicTier(protobug.Enum, strict=False):
+        # Unconfirmed proto mapping
+        MUSIC_TIER_UNSPECIFIED = 0
+        MUSIC_TIER_AVOD = 1
+        MUSIC_TIER_MAT = 2
+        MUSIC_TIER_SUBSCRIPTION = 3
+
+    class MusicPlayBackMode(protobug.Enum, strict=False):
+        # Unconfirmed proto mapping
+        MUSIC_PLAY_BACK_MODE_UNKNOWN = 0
+        MUSIC_PLAY_BACK_MODE_AUDIO = 1
+        MUSIC_PLAY_BACK_MODE_VIDEO = 2
+
+    class IosBackgroundRefreshStatus(protobug.Enum, strict=False):
+        # Unconfirmed proto mapping
+        IOS_BACKGROUND_REFRESH_STATUS_UNKNOWN = 0
+        IOS_BACKGROUND_REFRESH_STATUS_RESTRICTED = 1
+        IOS_BACKGROUND_REFRESH_STATUS_DENIED = 2
+        IOS_BACKGROUND_REFRESH_STATUS_AVAILABLE = 3
 
     play_back_mode: typing.Optional[MusicPlayBackMode] = protobug.field(1, default=None)
     music_location_master_switch: typing.Optional[MusicLocationMasterSwitch] = protobug.field(2, default=None)
@@ -366,7 +418,7 @@ class ClientInfo:
     utc_offset_minutes: typing.Optional[protobug.Int64] = protobug.field(67, default=None)
     animated_webp_support: typing.Optional[protobug.Bool] = protobug.field(68, default=None)
     kids_app_info: typing.Optional[KidsAppInfo] = protobug.field(69, default=None)
-    music_app_info: typing.Optional[protobug.Bytes] = protobug.field(70, default=None)  # todo: proto
+    music_app_info: typing.Optional[MusicAppInfo] = protobug.field(70, default=None)
     tv_app_info: typing.Optional[protobug.Bytes] = protobug.field(71, default=None)  # todo: proto
 
     internal_geo_ip: typing.Optional[protobug.String] = protobug.field(72, default=None)
