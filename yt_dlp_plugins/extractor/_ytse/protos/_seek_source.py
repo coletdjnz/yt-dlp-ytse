@@ -1,7 +1,7 @@
 import protobug
 
 
-class SeekSource(protobug.Enum):
+class SeekSource(protobug.Enum, strict=False):
     SEEK_SOURCE_UNKNOWN = 0
     SEEK_SOURCE_TIMESTAMP_IN_COMMENTS = 1
     SEEK_SOURCE_TIMESTAMP_IN_DESCRIPTION = 2

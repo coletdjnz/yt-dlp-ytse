@@ -19,7 +19,7 @@ class SpatialAudioCapabilities:
 
 @protobug.message
 class VideoFormatCapability:
-    class Profile(protobug.Enum):
+    class Profile(protobug.Enum, strict=False):
         UNKNOWN_PROFILE = 0
         MPEG4_SIMPLE = 1
         MPEG4_SIMPLE_0 = 2
@@ -35,7 +35,7 @@ class VideoFormatCapability:
         AVC_HIGH_32 = 12
         AVC_HIGH_41 = 13
 
-    class VideoCodec(protobug.Enum):
+    class VideoCodec(protobug.Enum, strict=False):
         UNKNOWN_CODEC = 0
         H263 = 1
         H264 = 2
@@ -69,7 +69,7 @@ class VideoFormatCapability:
 @protobug.message
 class AudioFormatCapability:
 
-    class AudioCodec(protobug.Enum):
+    class AudioCodec(protobug.Enum, strict=False):
         UNKNOWN_CODEC = 0
         AAC = 1
         VORBIS = 2
@@ -100,7 +100,7 @@ class PerPlaybackAttributes:
 
 @protobug.message
 class MediaCapabilities:
-    class HdrTransferFunctions(protobug.Enum):
+    class HdrTransferFunctions(protobug.Enum, strict=False):
         HDR_TRANSFER_FUNCTION_UNKNOWN = 0
         HDR_TRANSFER_FUNCTION_HLG = 1
         HDR_TRANSFER_FUNCTION_HDR_10 = 2

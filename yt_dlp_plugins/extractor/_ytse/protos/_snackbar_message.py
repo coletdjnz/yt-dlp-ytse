@@ -1,6 +1,7 @@
 import typing
 import protobug
 
+
 @protobug.message
 class SnackbarMessage:
     # Unsure on contents

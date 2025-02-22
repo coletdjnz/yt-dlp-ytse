@@ -3,7 +3,7 @@ import protobug
 from ._media_capabilities import MediaCapabilities
 
 
-class DetailedNetworkType(protobug.Enum):
+class DetailedNetworkType(protobug.Enum, strict=False):
     DETAILED_NETWORK_TYPE_UNKNOWN = 0
     DETAILED_NETWORK_TYPE_EDGE = 101
     DETAILED_NETWORK_TYPE_GPRS = 102
@@ -33,7 +33,7 @@ class DetailedNetworkType(protobug.Enum):
     DETAILED_NETWORK_TYPE_NR_NSA = 126
 
 
-class AudioQuality(protobug.Enum):
+class AudioQuality(protobug.Enum, strict=False):
     AUDIO_QUALITY_UNKNOWN = 0
     AUDIO_QUALITY_ULTRALOW = 5
     AUDIO_QUALITY_LOW = 10
@@ -41,14 +41,14 @@ class AudioQuality(protobug.Enum):
     AUDIO_QUALITY_HIGH = 30
 
 
-class VideoQualitySetting(protobug.Enum):
+class VideoQualitySetting(protobug.Enum, strict=False):
     VIDEO_QUALITY_SETTING_UNKNOWN = 0
     VIDEO_QUALITY_SETTING_HIGHER_QUALITY = 1
     VIDEO_QUALITY_SETTING_DATA_SAVER = 2
     VIDEO_QUALITY_SETTING_ADVANCED_MENU = 3
 
 
-class AudioRouteOutputType(protobug.Enum):
+class AudioRouteOutputType(protobug.Enum, strict=False):
     PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_UNKNOWN = 0
     PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_LINE_OUT = 1
     PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_HEADPHONES = 2
@@ -64,7 +64,7 @@ class AudioRouteOutputType(protobug.Enum):
     PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_ANDROID_AUDIO = 12
 
 
-class NetworkMeteredState(protobug.Enum):
+class NetworkMeteredState(protobug.Enum, strict=False):
     NETWORK_METERED_STATE_UNKNOWN = 0
     NETWORK_METERED_STATE_UNMETERED = 1
     NETWORK_METERED_STATE_METERED = 2
