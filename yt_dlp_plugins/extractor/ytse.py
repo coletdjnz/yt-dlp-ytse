@@ -242,6 +242,7 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
             dct['_sabr_config'] = {
                 **sabr_config,
                 'itag': itag,
+                'xtags': fmt.get('xtags'),
                 'last_modified': fmt.get('lastModified'),
                 'target_duration_sec': fmt.get('targetDurationSec'),
             }
