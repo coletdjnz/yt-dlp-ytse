@@ -408,7 +408,7 @@ class SABRStream:
 
         initialized_format.requested_format.write_callback(part.data[1:], SABRStatus(
                 fragment_index=current_sequence.sequence_number,
-                fragment_count=self.live_metadata and self.live_metadata.latest_sequence_number))
+                fragment_count=self.live_metadata and self.live_metadata.head_sequence_number))
         self._request_had_data = True
 
     def process_media_end(self, part: UMPPart):
@@ -419,8 +419,8 @@ class SABRStream:
     def process_live_metadata(self, part: UMPPart):
         self.live_metadata = protobug.loads(part.data, LiveMetadata)
         self.write_sabr_debug(part=part, protobug_obj=self.live_metadata, data=part.data)
-        if self.live_metadata.latest_sequence_duration_ms:
-            self.total_duration_ms = self.live_metadata.latest_sequence_duration_ms
+        if self.live_metadata.head_sequence_time_ms:
+            self.total_duration_ms = self.live_metadata.head_sequence_time_ms
 
     def process_stream_protection_status(self, part: UMPPart):
         sps = protobug.loads(part.data, StreamProtectionStatus)
@@ -460,7 +460,11 @@ class SABRStream:
     def _find_matching_requested_format(self, format_init_metadata: FormatInitializationMetadata):
         for requested_format in self._requested_audio_formats + self._requested_video_formats:
             if requested_format.format_id:
-                if requested_format.format_id == format_init_metadata.format_id:
+                if (
+                    requested_format.format_id.itag == format_init_metadata.format_id.itag
+                    and requested_format.format_id.last_modified == format_init_metadata.format_id.last_modified
+                    and requested_format.format_id.xtags == format_init_metadata.format_id.xtags
+                ):
                     return requested_format
             else:
                 # todo: add more matching criteria if the requested format does not have a format_id
@@ -504,7 +508,7 @@ class SABRStream:
 
     def process_sabr_seek(self, part: UMPPart):
         sabr_seek = protobug.loads(part.data, SabrSeek)
-        seek_to = math.ceil((sabr_seek.start / sabr_seek.timescale) * 1000)
+        seek_to = math.ceil((sabr_seek.seek_time / sabr_seek.timescale) * 1000)
         self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
         self.write_sabr_debug(f'Seeking to {seek_to}ms')
         self.client_abr_state.player_time_ms = seek_to

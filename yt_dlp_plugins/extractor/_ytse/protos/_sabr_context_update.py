@@ -15,14 +15,14 @@ import protobug
 @protobug.message
 class SabrContextUpdate:
 
-    class SabrContextScope(protobug.Enum):
+    class SabrContextScope(protobug.Enum, strict=False):
         SABR_CONTEXT_SCOPE_UNKNOWN = 0
         SABR_CONTEXT_SCOPE_PLAYBACK = 1
         SABR_CONTEXT_SCOPE_REQUEST = 2
         SABR_CONTEXT_SCOPE_WATCH_ENDPOINT = 3
         SABR_CONTEXT_SCOPE_CONTENT_ADS = 4
 
-    class SabrContextWritePolicy(protobug.Enum):
+    class SabrContextWritePolicy(protobug.Enum, strict=False):
         # Whether to override existing sabr context updates?
         SABR_CONTEXT_WRITE_POLICY_UNSPECIFIED = 0
         SABR_CONTEXT_WRITE_POLICY_OVERWRITE = 1
