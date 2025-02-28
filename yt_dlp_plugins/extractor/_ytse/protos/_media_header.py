@@ -7,9 +7,17 @@ from ._time_range import TimeRange
 @protobug.message
 class MediaHeader:
     class Compression(protobug.Enum, strict=False):
-        UNKNOWN_VAL_0 = 0
-        UNKNOWN_VAL_1 = 1
-        GZIP = 2
+        COMPRESSION_ALGORITHM_UNKNOWN = 0
+        COMPRESSION_ALGORITHM_NONE = 1
+        COMPRESSION_ALGORITHM_GZIP = 2
+
+        """
+        may also match:
+        COMPRESSION_FORMAT_UNKNOWN = 0
+        COMPRESSION_FORMAT_IDENTITY = 1
+        COMPRESSION_FORMAT_GZIP = 2
+        COMPRESSION_FORMAT_BROTLI = 3?
+        """
 
     header_id: typing.Optional[protobug.UInt32] = protobug.field(1, default=None)
     video_id: typing.Optional[protobug.String] = protobug.field(2, default=None)
