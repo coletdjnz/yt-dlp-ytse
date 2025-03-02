@@ -220,9 +220,12 @@ class SABRStream:
             if not self._request_had_data:
                 # todo: how to prevent youtube sending us in a redirect loop?
                 if requests_no_data >= 2 and not self._redirected:
+                    # todo: treat this differently for videos. They should always be close to the player time, and should fail if we stop getting data midway through.
+                    # e.g. ios without POT token stops sending data
                     if self.total_duration_ms and self.client_abr_state.player_time_ms < self.total_duration_ms:
                         # todo: test streams that go down temporary. Should we increase this?
                         self._logger.warning('No data found in three consecutive requests - assuming end of video')
+                    self._logger.warning('Assuming end of video')
                     break  # stream finished?
                 requests_no_data += 1
             else:
@@ -382,7 +385,7 @@ class SABRStream:
             if not self.live_metadata or actual_duration_ms:
                 # We need to increment both duration_ms and time_range.duration
                 current_buffered_range.duration_ms += duration_ms
-                current_buffered_range.time_range.duration += duration_ms
+                current_buffered_range.time_range.duration_ticks += duration_ms
             else:
                 # Attempt to keep in sync with livestream, as the segment duration target is not always perfect.
                 # The server seems to care more about the segment index than the duration.
@@ -390,7 +393,7 @@ class SABRStream:
                     raise DownloadError(f'Buffered range start time mismatch: {current_buffered_range.start_time_ms} > {start_ms}')
 
                 new_duration = (start_ms - current_buffered_range.start_time_ms) + estimated_duration_ms
-                current_buffered_range.duration_ms = current_buffered_range.time_range.duration = new_duration
+                current_buffered_range.duration_ms = current_buffered_range.time_range.duration_ticks = new_duration
 
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
@@ -471,6 +474,8 @@ class SABRStream:
                 pass
 
     def process_format_initialization_metadata(self, part: UMPPart):
+        # todo: consider always initializing a format even if it is not matching?
+        # Sometimes when downloading video only, it starts with audio-only (which we want to ignore)
         fmt_init_metadata = protobug.loads(part.data, FormatInitializationMetadata)
         self.write_sabr_debug(part=part, protobug_obj=fmt_init_metadata, data=part.data)
 
