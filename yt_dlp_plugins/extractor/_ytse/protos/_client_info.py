@@ -179,8 +179,8 @@ class ConnectionType(protobug.Enum, strict=False):
     CONN_WIFI_METERED = 10
     CONN_CELLULAR_5G_SA = 11
     CONN_CELLULAR_5G_NSA = 12
-    CONN_WIRED = 13
-    CONN_INVALID = 14
+    CONN_WIRED = 13  # unconfirmed
+    CONN_INVALID = 31
 
 
 @protobug.message
@@ -684,7 +684,6 @@ class PlatformDetail(protobug.Enum, strict=False):
 
 
 class EffectiveConnectionType(protobug.Enum, strict=False):
-    # Unconfirmed proto mapping
     EFFECTIVE_CONNECTION_TYPE_UNKNOWN = 0
     EFFECTIVE_CONNECTION_TYPE_OFFLINE = 1
     EFFECTIVE_CONNECTION_TYPE_SLOW_2G = 2
