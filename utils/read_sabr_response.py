@@ -29,7 +29,8 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     TimelineContext,
     ReloadPlayerResponse,
     PlaybackDebugInfo,
-    SnackbarMessage
+    SnackbarMessage,
+    SabrError
 )
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType, UMPParser
 
@@ -140,6 +141,11 @@ def print_sabr_parts(fp):
             sm = protobug.loads(part.data, SnackbarMessage)
             print(f'Snackbar Message: {sm}')
             write_unknown_fields(f, sm)
+
+        elif part.part_type == UMPPartType.SABR_ERROR:
+            se = protobug.loads(part.data, SabrError)
+            f.write(f'Sabr Error: {se}\n')
+            write_unknown_fields(f, se)
 
         elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
             print(f'Media Header Id: {part.data[0]}')

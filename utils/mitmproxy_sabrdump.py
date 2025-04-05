@@ -27,7 +27,8 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     TimelineContext,
     ReloadPlayerResponse,
     PlaybackDebugInfo,
-    SnackbarMessage
+    SnackbarMessage,
+    SabrError
 )
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType, UMPParser
 
@@ -37,6 +38,8 @@ def write_unknown_fields(f, protobug_obj):
     if uf:
         f.write(f'Unknown Fields: {uf}\n')
 
+count = 0
+
 
 class SABRParser:
     def response(self, flow: http.HTTPFlow) -> None:
@@ -45,15 +48,19 @@ class SABRParser:
             parser = UMPParser(res)
             rn = flow.request.query.get("rn")
             n = flow.request.query.get("n")
+            global count
+            count += 1
             expire = flow.request.query.get("expire")
+            print(flow.request.query)
 
-            with open(f'dumps/{n or expire}-{rn}.dump', 'w') as f:
+            with open(f'dumps/{n or expire}-{rn or count}.dump', 'w') as f:
                 f.write(f'URL: {flow.request.url}\n')
                 f.write(f'request body base64: {base64.b64encode(flow.request.content).decode("utf-8")}\n')
 
                 try:
                     vpar = protobug.loads(flow.request.content, VideoPlaybackAbrRequest)
                     f.write(f'request body decoded: {vpar}\n')
+                    f.write(f'ustream config base64: {base64.b64encode(vpar.video_playback_ustreamer_config).decode("utf-8")}\n')
                     write_unknown_fields(f, vpar)
                 except Exception as e:
                     print(f'not a sabr request: ({e})')
@@ -156,6 +163,10 @@ class SABRParser:
                         f.write(f'Snackbar Message: {sm}\n')
                         write_unknown_fields(f, sm)
 
+                    elif part.part_type == UMPPartType.SABR_ERROR:
+                        se = protobug.loads(part.data, SabrError)
+                        f.write(f'Sabr Error: {se}\n')
+                        write_unknown_fields(f, se)
 
                     elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
                         f.write(f'Media Header Id: {part.data[0]}\n')

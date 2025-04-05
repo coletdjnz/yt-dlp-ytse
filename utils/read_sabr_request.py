@@ -18,6 +18,7 @@ def read_and_print_vpar(file_path):
         vpar = protobug.loads(file_content, VideoPlaybackAbrRequest)
         pprint(vpar, width=120)
         print(f'video_playback_ustreamer_config b64: {base64.b64encode(vpar.video_playback_ustreamer_config).decode()}')
+        print(f'ustream config base64: {base64.b64encode(vpar.video_playback_ustreamer_config).decode("utf-8")}\n')
         uf = list(unknown_fields(vpar))
         if uf:
             print(f'Unknown Fields: {uf}')
