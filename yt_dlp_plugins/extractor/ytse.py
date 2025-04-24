@@ -2,13 +2,26 @@ import re
 import sys
 
 from yt_dlp.extractor.openload import PhantomJSwrapper
-from yt_dlp.extractor.youtube import (
-    YoutubeIE,
-    short_client_name,
-    STREAMING_DATA_INITIAL_PO_TOKEN,
-    STREAMING_DATA_CLIENT_NAME,
-    _PoTokenContext
-)
+
+from yt_dlp.extractor.youtube import YoutubeIE
+
+try:
+    from yt_dlp.extractor.youtube._base import (
+        short_client_name,
+        _PoTokenContext
+    )
+    from yt_dlp.extractor.youtube._video import (
+        STREAMING_DATA_INITIAL_PO_TOKEN,
+        STREAMING_DATA_CLIENT_NAME,
+    )
+except ImportError:
+    from yt_dlp.extractor.youtube import (
+        short_client_name,
+        STREAMING_DATA_INITIAL_PO_TOKEN,
+        STREAMING_DATA_CLIENT_NAME,
+        _PoTokenContext
+    )
+
 from yt_dlp.jsinterp import JSInterpreter
 from yt_dlp.utils import (
     ExtractorError,
@@ -242,6 +255,7 @@ class _YTSE(YoutubeIE, plugin_name='YTSE'):
             dct['_sabr_config'] = {
                 **sabr_config,
                 'itag': itag,
+                'xtags': fmt.get('xtags'),
                 'last_modified': fmt.get('lastModified'),
                 'target_duration_sec': fmt.get('targetDurationSec'),
             }

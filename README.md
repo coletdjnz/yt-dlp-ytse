@@ -121,3 +121,5 @@ See also:
 ## Acknowledgements
 
 - [googlevideo](https://github.com/LuanRT/googlevideo) by [@LuanRT](https://github.com/LuanRT) 
+- [innertube](https://github.com/davidzeng0/innertube) by [@davidzeng0](https://github.com/davidzeng0)
+- [googleapi_tools](https://github.com/ddd/googleapi_tools) by [@ddd (brutecat)](https://github.com/ddd)

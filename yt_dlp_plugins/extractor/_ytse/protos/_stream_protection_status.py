@@ -11,4 +11,6 @@ class StreamProtectionStatus:
         ATTESTATION_REQUIRED = 3
 
     status: typing.Optional[Status] = protobug.field(1, default=None)
-    unknown_field_2: typing.Optional[protobug.UInt32] = protobug.field(2, default=None)
+    # Max. retries can make when status is ATTESTATION_REQUIRED
+    # This is to give some extra time for the PO Token to be minted (as a last ditch effort)?
+    max_retries: typing.Optional[protobug.Int32] = protobug.field(2, default=None)

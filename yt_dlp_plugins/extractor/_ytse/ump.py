@@ -66,6 +66,7 @@ class UMPPartType(enum.IntEnum):
     UNKNOWN = -1
     ONESIE_HEADER = 10
     ONESIE_DATA = 11
+    ONESIE_ENCRYPTED_MEDIA = 12
     MEDIA_HEADER = 20
     MEDIA = 21
     MEDIA_END = 22
@@ -101,6 +102,8 @@ class UMPPartType(enum.IntEnum):
     CACHE_LOAD_POLICY = 63
     LAWNMOWER_MESSAGING_POLICY = 64
     PREWARM_CONNECTION = 65
+    PLAYBACK_DEBUG_INFO = 66
+    SNACKBAR_MESSAGE = 67
 
     @classmethod
     def _missing_(cls, value):

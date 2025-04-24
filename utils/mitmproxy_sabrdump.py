@@ -21,7 +21,14 @@ from yt_dlp_plugins.extractor._ytse.protos import (
     unknown_fields,
     SelectableFormats,
     PrewarmConnection,
-    AllowedCachedFormats
+    AllowedCachedFormats,
+    SabrContextUpdate,
+    SabrContextSendingPolicy,
+    TimelineContext,
+    ReloadPlayerResponse,
+    PlaybackDebugInfo,
+    SnackbarMessage,
+    SabrError
 )
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType, UMPParser
 
@@ -31,25 +38,32 @@ def write_unknown_fields(f, protobug_obj):
     if uf:
         f.write(f'Unknown Fields: {uf}\n')
 
+count = 0
+
 
 class SABRParser:
     def response(self, flow: http.HTTPFlow) -> None:
         if "application/vnd.yt-ump" in flow.response.headers.get("Content-Type", ""):
-            res = Response(fp=io.BytesIO(flow.response.raw_content), url=flow.request.url, headers={})
+            res = Response(fp=io.BytesIO(flow.response.content), url=flow.request.url, headers={})
             parser = UMPParser(res)
             rn = flow.request.query.get("rn")
             n = flow.request.query.get("n")
+            global count
+            count += 1
+            expire = flow.request.query.get("expire")
+            print(flow.request.query)
 
-            with open(f'dumps/{rn}-{n}.dump', 'w') as f:
+            with open(f'dumps/{n or expire}-{rn or count}.dump', 'w') as f:
                 f.write(f'URL: {flow.request.url}\n')
-                f.write(f'request body base64: {base64.b64encode(flow.request.raw_content).decode("utf-8")}\n')
+                f.write(f'request body base64: {base64.b64encode(flow.request.content).decode("utf-8")}\n')
 
                 try:
-                    vpar = protobug.loads(flow.request.raw_content, VideoPlaybackAbrRequest)
+                    vpar = protobug.loads(flow.request.content, VideoPlaybackAbrRequest)
                     f.write(f'request body decoded: {vpar}\n')
+                    f.write(f'ustream config base64: {base64.b64encode(vpar.video_playback_ustreamer_config).decode("utf-8")}\n')
                     write_unknown_fields(f, vpar)
-                except:
-                    print('not a sabr request')
+                except Exception as e:
+                    print(f'not a sabr request: ({e})')
 
                 for part in parser.iter_parts():
                     print(f'Part type: {part.part_type}, Part size: {part.size}')
@@ -118,6 +132,41 @@ class SABRParser:
                         acf = protobug.loads(part.data, AllowedCachedFormats)
                         f.write(f'Allowed Cached Formats: {acf}\n')
                         write_unknown_fields(f, acf)
+
+                    elif part.part_type == UMPPartType.SABR_CONTEXT_UPDATE:
+                        scu = protobug.loads(part.data, SabrContextUpdate)
+                        f.write(f'Sabr Context Update: {scu}\n')
+                        write_unknown_fields(f, scu)
+
+                    elif part.part_type == UMPPartType.SABR_CONTEXT_SENDING_POLICY:
+                        scsp = protobug.loads(part.data, SabrContextSendingPolicy)
+                        f.write(f'Sabr Context Sending Policy: {scsp}\n')
+                        write_unknown_fields(f, scsp)
+
+                    elif part.part_type == UMPPartType.TIMELINE_CONTEXT:
+                        tc = protobug.loads(part.data, TimelineContext)
+                        f.write(f'Timeline Context: {tc}\n')
+                        write_unknown_fields(f, tc)
+
+                    elif part.part_type == UMPPartType.RELOAD_PLAYER_RESPONSE:
+                        rpr = protobug.loads(part.data, ReloadPlayerResponse)
+                        f.write(f'Reload Player Response: {rpr}\n')
+                        write_unknown_fields(f, rpr)
+
+                    elif part.part_type == UMPPartType.PLAYBACK_DEBUG_INFO:
+                        pdi = protobug.loads(part.data, PlaybackDebugInfo)
+                        f.write(f'Playback Debug Info: {pdi}\n')
+                        write_unknown_fields(f, pdi)
+
+                    elif part.part_type == UMPPartType.SNACKBAR_MESSAGE:
+                        sm = protobug.loads(part.data, SnackbarMessage)
+                        f.write(f'Snackbar Message: {sm}\n')
+                        write_unknown_fields(f, sm)
+
+                    elif part.part_type == UMPPartType.SABR_ERROR:
+                        se = protobug.loads(part.data, SabrError)
+                        f.write(f'Sabr Error: {se}\n')
+                        write_unknown_fields(f, se)
 
                     elif part.part_type == UMPPartType.MEDIA or part.part_type == UMPPartType.MEDIA_END:
                         f.write(f'Media Header Id: {part.data[0]}\n')
