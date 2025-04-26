@@ -103,7 +103,7 @@ class ClientAbrState:
     unknown_field_50: typing.Optional[protobug.Int32] = protobug.field(50, default=None)
     unknown_field_51: typing.Optional[protobug.Int32] = protobug.field(51, default=None)
     sabr_report_request_cancellation_info: typing.Optional[protobug.Int32] = protobug.field(54, default=None)
-    unknown_field_55: typing.Optional[protobug.Bytes] = protobug.field(55, default=None)  # some sort of message
+    #unknown_field_55: typing.Optional[protobug.Bytes] = protobug.field(55, default=None)  # some sort of message
     unknown_field_56: typing.Optional[protobug.Bool] = protobug.field(56, default=None)
     unknown_field_57: typing.Optional[protobug.Int64] = protobug.field(57, default=None)
     prefer_vp9: typing.Optional[protobug.Bool] = protobug.field(58, default=None)
