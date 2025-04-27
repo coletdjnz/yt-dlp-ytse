@@ -5,10 +5,11 @@ from pprint import pprint
 
 import protobug
 from yt_dlp_plugins.extractor._ytse.protos import (
-    VideoPlaybackAbrRequest, unknown_fields,
+     unknown_fields,
 
 )
 
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.video_playback_abr_request import VideoPlaybackAbrRequest
 
 def read_and_print_vpar(file_path):
     with open(file_path, 'rb') as f:

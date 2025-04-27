@@ -7,29 +7,30 @@ import protobug
 from mitmproxy import http
 from yt_dlp.networking import Response
 
-from yt_dlp_plugins.extractor._ytse.protos import (
-    MediaHeader,
-    SabrRedirect,
-    NextRequestPolicy,
-    FormatInitializationMetadata,
-    StreamProtectionStatus,
-    VideoPlaybackAbrRequest,
-    PlaybackStartPolicy,
-    RequestCancellationPolicy,
-    SabrSeek,
-    LiveMetadata,
-    unknown_fields,
-    SelectableFormats,
-    PrewarmConnection,
-    AllowedCachedFormats,
-    SabrContextUpdate,
-    SabrContextSendingPolicy,
-    TimelineContext,
-    ReloadPlayerResponse,
-    PlaybackDebugInfo,
-    SnackbarMessage,
-    SabrError
-)
+from yt_dlp_plugins.extractor._ytse.protos import unknown_fields
+
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.media_header import MediaHeader
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.video_playback_abr_request import VideoPlaybackAbrRequest
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.live_metadata import LiveMetadata
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.stream_protection_status import StreamProtectionStatus
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.sabr_redirect import SabrRedirect
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.format_initialization_metadata import FormatInitializationMetadata
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.sabr_seek import SabrSeek
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.sabr_error import SabrError
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.request_cancellation_policy import RequestCancellationPolicy
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.selectable_formats import SelectableFormats
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.prewarm_connection import PrewarmConnection
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.allowed_cached_formats import AllowedCachedFormats
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.sabr_context_update import SabrContextUpdate
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.sabr_context_sending_policy import SabrContextSendingPolicy
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.timeline_context import TimelineContext
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.reload_player_response import ReloadPlayerResponse
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.snackbar_message import SnackbarMessage
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.playback_debug_info import PlaybackDebugInfo
+
+from yt_dlp_plugins.extractor._ytse.protos.innertube.next_request_policy import NextRequestPolicy
+from yt_dlp_plugins.extractor._ytse.protos.innertube.playback_start_policy import PlaybackStartPolicy
+
 from yt_dlp_plugins.extractor._ytse.ump import UMPPartType, UMPParser
 
 
