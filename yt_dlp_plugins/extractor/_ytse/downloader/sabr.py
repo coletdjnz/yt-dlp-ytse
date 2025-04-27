@@ -1,4 +1,5 @@
 import collections
+import dataclasses
 import itertools
 from yt_dlp.downloader import FileDownloader
 
@@ -15,7 +16,14 @@ from ..protos import (
     FormatId,
     ClientInfo
 )
-from ..sabr import SABRStream, FormatRequest, SABRStatus, FormatType
+from ..sabr import SABRStream, FormatRequest, FormatType, MediaSabrPart, PoTokenStatusSabrPart
+
+
+@dataclasses.dataclass
+class SABRStatus:
+    start_bytes: int = 0
+    fragment_index: int = None
+    fragment_count: int = None
 
 
 class SABRFDWriter:
@@ -160,27 +168,28 @@ class SABRFD(FileDownloader):
                 if not audio_format and video_format:
                     self.write_debug('Downloading a video stream without audio. SABR does not allow video-only, so an additional audio stream will be downloaded but discarded.')
 
+                video_format_request = FormatRequest(
+                        format_id=video_format['format_id'],
+                        format_type=FormatType.VIDEO,
+                        quality=video_format['quality'],
+                        height=video_format['height'],
+                    ) if video_format else None
+
+                audio_format_request = FormatRequest(
+                        format_id=audio_format['format_id'],
+                        format_type=FormatType.AUDIO,
+                        quality=audio_format['quality'],
+                        height=audio_format['height'],
+                    ) if audio_format else None
                 stream = SABRStream(
                     urlopen=self.ydl.urlopen,
                     logger=_YDLLogger(self.ydl),
                     debug=bool(traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'sabr_debug', 0, {int_or_none}), get_all=False)),
                     server_abr_streaming_url=format_group['server_abr_streaming_url'],
                     video_playback_ustreamer_config=format_group['video_playback_ustreamer_config'],
-                    po_token_fn=format_group['po_token_fn'],
-                    video_formats=video_format and [FormatRequest(
-                        format_id=video_format['format_id'],
-                        format_type=FormatType.VIDEO,
-                        quality=video_format['quality'],
-                        height=video_format['height'],
-                        write_callback=video_format_writer.write
-                    )],
-                    audio_formats=audio_format and [FormatRequest(
-                        format_id=audio_format['format_id'],
-                        format_type=FormatType.AUDIO,
-                        quality=audio_format['quality'],
-                        height=audio_format['height'],
-                        write_callback=audio_format_writer.write
-                    )],
+                    po_token=format_group['po_token_fn'](),
+                    video_formats=[video_format_request] if video_format_request else [],
+                    audio_formats=[audio_format_request] if audio_format_request else [],
                     start_time_ms=format_group['start_time_ms'],
                     client_info=format_group['client_info'],
                     reload_config_fn=format_group['reload_config_fn'],
@@ -189,7 +198,27 @@ class SABRFD(FileDownloader):
                 self._prepare_multiline_status(int(bool(audio_format and video_format)) + 1)
 
                 try:
-                    stream.download()
+                    for part in stream:
+                        if isinstance(part, PoTokenStatusSabrPart):
+                            print(f'part type is PoTokenStatusSabrPart: {part}')
+
+                        elif isinstance(part, MediaSabrPart):
+                            if part.requested_format is audio_format_request:
+                                audio_format_writer.write(part.data, SABRStatus(
+                                    start_bytes=part.start_bytes,
+                                    fragment_index=part.fragment_index,
+                                    fragment_count=part.fragment_count,
+                                ))
+                            elif part.requested_format is video_format_request:
+                                video_format_writer.write(part.data, SABRStatus(
+                                    start_bytes=part.start_bytes,
+                                    fragment_index=part.fragment_index,
+                                    fragment_count=part.fragment_count,
+                                ))
+
+                        else:
+                            print(f'Unknown part type: {part}')
+
                 except KeyboardInterrupt:
                     if not info_dict.get('is_live'):
                         raise

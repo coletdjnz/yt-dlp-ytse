@@ -35,12 +35,6 @@ from .protos import (
 from .ump import UMPParser, UMPPartType, UMPPart
 
 
-@dataclasses.dataclass
-class SABRStatus:
-    start_bytes: int = 0
-    fragment_index: int = None
-    fragment_count: int = None
-
 
 class FormatType(enum.Enum):
     AUDIO = 'audio'
@@ -51,9 +45,37 @@ class FormatType(enum.Enum):
 class FormatRequest:
     format_type: FormatType
     format_id: FormatId
-    write_callback: typing.Callable[[bytes, SABRStatus], None]
     quality: typing.Optional[str] = None
     height: typing.Optional[str] = None
+
+
+@dataclasses.dataclass
+class SabrPart:
+    pass
+
+
+@dataclasses.dataclass
+class MediaSabrPart(SabrPart):
+    requested_format: FormatRequest
+    format_id: FormatId
+    player_time_ms: int = 0
+    start_bytes: int = 0
+    fragment_index: int = None
+    fragment_count: int = None
+    data: bytes = b''
+
+
+@dataclasses.dataclass
+class PoTokenStatusSabrPart(SabrPart):
+    class PoTokenStatus(enum.Enum):
+        OK = enum.auto()                          # PO Token is provided and valid
+        MISSING = enum.auto()                     # PO Token is not provided, and is required. A PO Token should be provided ASAP
+        INVALID = enum.auto()                     # PO Token is provided, but is invalid. A new one should be generated ASAP
+        PENDING = enum.auto()                     # PO Token is provided, but probably only a cold start token. A full PO Token should be provided ASAP
+        NOT_REQUIRED = enum.auto()                # PO Token is not provided, and is not required
+        PENDING_MISSING = enum.auto()        # PO Token is not provided, but is pending. A full PO Token should be (probably) provided ASAP
+
+    status: PoTokenStatus
 
 
 @dataclasses.dataclass
@@ -91,13 +113,13 @@ class SABRStream:
         logger: _YDLLogger,
         server_abr_streaming_url: str,
         video_playback_ustreamer_config: str,
-        po_token_fn: typing.Callable[[], str],
         client_info: ClientInfo,
         video_formats: List[FormatRequest] = None, audio_formats: List[FormatRequest] = None,
         live_segment_target_duration_sec: int = None,
         reload_config_fn: typing.Callable[[], tuple[str, str]] = None,
         start_time_ms: int = 0,
         debug=False,
+        po_token: str = None
     ):
 
         self._logger = logger
@@ -107,7 +129,7 @@ class SABRStream:
         self._requested_audio_formats: List[FormatRequest] = audio_formats or []
         self.server_abr_streaming_url = server_abr_streaming_url
         self.video_playback_ustreamer_config = video_playback_ustreamer_config
-        self.get_po_token = po_token_fn
+        self.po_token = po_token
         self.reload_config_fn = reload_config_fn
         self.client_info = client_info
         self.client_abr_state: ClientAbrState = None
@@ -123,15 +145,14 @@ class SABRStream:
         self._redirected = False
         self._start_time_ms = start_time_ms
 
-    def download(self):
         # note: video only is not supported
         enabled_track_types_bitfield = 0  # Both
         if len(self._requested_video_formats) == 0:
             enabled_track_types_bitfield = 1  # Audio only
 
         # todo: handle non-format-id format requests
-        selectable_audio_format_ids = [f.format_id for f in self._requested_audio_formats]
-        selectable_video_format_ids = [f.format_id for f in self._requested_video_formats]
+        self.selectable_audio_format_ids = [f.format_id for f in self._requested_audio_formats]
+        self.selectable_video_format_ids = [f.format_id for f in self._requested_video_formats]
 
         self.write_sabr_debug(f'starting at: {self._start_time_ms}')
         # initialize client abr state
@@ -143,16 +164,19 @@ class SABRStream:
         if self.live_segment_target_duration_sec:
             self.write_sabr_debug(f'using live_segment_target_duration_sec: {self.live_segment_target_duration_sec}')
 
-        requests_no_data = 0
-        request_number = 0
 
+        self.requests_no_data = 0
+        self.request_number = 0
+
+    def __iter__(self):
+        # todo: create an isolated iterable?
         while self.live_metadata or not self.total_duration_ms or self.client_abr_state.player_time_ms < self.total_duration_ms:
             self.process_expiry()
-            po_token = self.get_po_token()
+            po_token = self.po_token
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self.client_abr_state,
-                selectable_video_format_ids=selectable_video_format_ids,
-                selectable_audio_format_ids=selectable_audio_format_ids,
+                selectable_video_format_ids=self.selectable_video_format_ids,
+                selectable_audio_format_ids=self.selectable_audio_format_ids,
                 selected_format_ids=[
                     initialized_format.format_id for initialized_format in self.initialized_formats.values()
                 ],
@@ -183,12 +207,12 @@ class SABRStream:
                                 url=self.server_abr_streaming_url,
                                 method='POST',
                                 data=payload,
-                                query={'rn': request_number},
+                                query={'rn': self.request_number},
                                 headers={'content-type': 'application/x-protobuf'}
                             )
                         )
                         # Handle read errors too
-                        self.parse_ump_response(response)
+                        yield from filter(None, self.parse_ump_response(response))
                     except TransportError as e:
                         self._logger.warning(f'Transport Error: {e}')
                         retry.error = e
@@ -219,14 +243,14 @@ class SABRStream:
 
             if not self._request_had_data:
                 # todo: how to prevent youtube sending us in a redirect loop?
-                if requests_no_data >= 2 and not self._redirected:
+                if self.requests_no_data >= 2 and not self._redirected:
                     if self.total_duration_ms and self.client_abr_state.player_time_ms < self.total_duration_ms:
                         # todo: test streams that go down temporary. Should we increase this?
                         self._logger.warning('No data found in three consecutive requests - assuming end of video')
                     break  # stream finished?
-                requests_no_data += 1
+                self.requests_no_data += 1
             else:
-                requests_no_data = 0
+                self.requests_no_data = 0
 
             current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self.initialized_formats.values() if initialized_format.buffered_ranges]
 
@@ -254,7 +278,7 @@ class SABRStream:
             self._request_had_data = False
             self._redirected = False
 
-            request_number += 1
+            self.request_number += 1
 
     def _report_retry(self, err, count, retries, fatal=True):
         RetryManager.report_retry(
@@ -286,11 +310,11 @@ class SABRStream:
             if part.part_type == UMPPartType.MEDIA_HEADER:
                 self.process_media_header(part)
             elif part.part_type == UMPPartType.MEDIA:
-                self.process_media(part)
+                yield from self.process_media(part)
             elif part.part_type == UMPPartType.MEDIA_END:
                 self.process_media_end(part)
             elif part.part_type == UMPPartType.STREAM_PROTECTION_STATUS:
-                self.process_stream_protection_status(part)
+                yield from self.process_stream_protection_status(part)
             elif part.part_type == UMPPartType.SABR_REDIRECT:
                 self.process_sabr_redirect(part)
             elif part.part_type == UMPPartType.FORMAT_INITIALIZATION_METADATA:
@@ -406,9 +430,15 @@ class SABRStream:
             self.write_sabr_debug(f'Initialized Format not found for header ID {header_id}', part=part)
             return
 
-        initialized_format.requested_format.write_callback(part.data[1:], SABRStatus(
-                fragment_index=current_sequence.sequence_number,
-                fragment_count=self.live_metadata and self.live_metadata.head_sequence_number))
+        yield MediaSabrPart(
+            requested_format=initialized_format.requested_format,
+            format_id=current_sequence.format_id,
+            player_time_ms=self.client_abr_state.player_time_ms,
+            fragment_index=current_sequence.sequence_number,
+            fragment_count=self.live_metadata and self.live_metadata.head_sequence_number,
+            data=part.data[1:]
+        )
+
         self._request_had_data = True
 
     def process_media_end(self, part: UMPPart):
@@ -424,7 +454,24 @@ class SABRStream:
 
     def process_stream_protection_status(self, part: UMPPart):
         sps = protobug.loads(part.data, StreamProtectionStatus)
-        self.write_sabr_debug(f'Status: {StreamProtectionStatus.Status(sps.status).name}', part=part, data=part.data)
+        self.write_sabr_debug(f'Status: {StreamProtectionStatus.Status(sps.status).name}', protobug_obj=sps, part=part, data=part.data)
+        if sps.status == StreamProtectionStatus.Status.OK:
+            if self.po_token:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.OK)
+            else:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.NOT_REQUIRED)
+        elif sps.status == StreamProtectionStatus.Status.ATTESTATION_PENDING:
+            if self.po_token:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING)
+            else:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING_MISSING)
+        elif sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
+            if self.po_token:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.INVALID)
+            else:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.MISSING)
+
+        # todo: use retries before throwing an error
         if sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
             raise DownloadError('StreamProtectionStatus: Attestation Required')
 
