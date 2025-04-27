@@ -144,7 +144,7 @@ class SABRFD(FileDownloader):
 
             itag = int_or_none(sabr_config.get('itag'))
             sabr_format_group_config['formats'].append({
-                'format_id': itag and FormatId(itag=itag, last_modified=int_or_none(sabr_config.get('last_modified')), xtags=sabr_config.get('xtags')),
+                'format_id': itag and FormatId(itag=itag, lmt=int_or_none(sabr_config.get('last_modified')), xtags=sabr_config.get('xtags')),
                 'format_type': FormatType.VIDEO if f.get('acodec') == 'none' else FormatType.AUDIO,
                 'quality': sabr_config.get('quality'),
                 'height': sabr_config.get('height'),

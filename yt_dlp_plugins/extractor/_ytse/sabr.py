@@ -13,7 +13,7 @@ from yt_dlp import DownloadError, int_or_none, traverse_obj
 from yt_dlp.networking import Request, Response
 from yt_dlp.networking.exceptions import HTTPError, TransportError
 from yt_dlp.utils import parse_qs, update_url_query
-from yt_dlp.utils._utils import _YDLLogger, RetryManager
+from yt_dlp.utils._utils import _YDLLogger, RetryManager, bug_reports_message
 
 from .protos import (
     ClientInfo,
@@ -77,7 +77,7 @@ class PoTokenStatusSabrPart(SabrPart):
         INVALID = enum.auto()                     # PO Token is provided, but is invalid. A new one should be generated ASAP
         PENDING = enum.auto()                     # PO Token is provided, but probably only a cold start token. A full PO Token should be provided ASAP
         NOT_REQUIRED = enum.auto()                # PO Token is not provided, and is not required
-        PENDING_MISSING = enum.auto()        # PO Token is not provided, but is pending. A full PO Token should be (probably) provided ASAP
+        PENDING_MISSING = enum.auto()             # PO Token is not provided, but is pending. A full PO Token should be (probably) provided ASAP
 
     status: PoTokenStatus
 
@@ -108,7 +108,7 @@ class InitializedFormat:
 
 
 def get_format_key(format_id: FormatId):
-    return f'{format_id.itag}-{format_id.last_modified}-{format_id.xtags}'
+    return f'{format_id.itag}-{format_id.lmt}-{format_id.xtags}'
 
 
 class SABRStream:
@@ -150,6 +150,10 @@ class SABRStream:
         self._requests_no_data = 0
         self._request_number = 0
 
+        self._sps_retry_count = 0
+        self._is_retry = False
+        self._default_max_sps_retries = 5
+
         self._redirected = False
         self._request_had_data = False
         self._sabr_seeked = False
@@ -186,14 +190,6 @@ class SABRStream:
         self._client_abr_state = ClientAbrState(
             player_time_ms=self.start_time_ms,
             enabled_track_types_bitfield=enabled_track_types_bitfield,
-        )
-
-    def finished(self):
-        return (
-            self._consumed
-            or (
-
-            )
         )
 
     def iter_parts(self, max_requests=-1):
@@ -269,10 +265,11 @@ class SABRStream:
         self._consumed = True
 
     def _update_request_state(self):
-        if not self._request_had_data:
+        if not self._request_had_data and not self._is_retry:
             # todo: how to prevent youtube sending us in a redirect loop?
             if self._requests_no_data >= 2 and not self._redirected:
                 if self._total_duration_ms and self._client_abr_state.player_time_ms < self._total_duration_ms:
+                    # todo: if not live, this should probably be a fatal error
                     # todo: test streams that go down temporary. Should we increase this?
                     self._logger.warning('No data found in three consecutive requests - assuming end of video')
                 self._consumed = True  # stream finished?
@@ -287,47 +284,57 @@ class SABRStream:
             self._logger.warning(f'Extraneous header IDs left: {list(self._header_ids.values())}')
             self._header_ids.clear()
 
-        current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self._initialized_formats.values() if initialized_format.buffered_ranges]
+        # Do not update client abr state if we are retrying
+        # For the case we fail midway through a response after reading some media data, but didn't get all of it.
+        if not self._is_retry:
+            current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self._initialized_formats.values() if initialized_format.buffered_ranges]
 
-        # choose format that is the most behind
-        lowest_buffered_range = min(current_buffered_ranges, key=lambda x: x.start_time_ms + x.duration_ms) if current_buffered_ranges else None
-        min_buffered_duration_ms = lowest_buffered_range.start_time_ms + lowest_buffered_range.duration_ms if lowest_buffered_range else 0
-        next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
+            # choose format that is the most behind
+            lowest_buffered_range = min(current_buffered_ranges, key=lambda x: x.start_time_ms + x.duration_ms) if current_buffered_ranges else None
+            min_buffered_duration_ms = lowest_buffered_range.start_time_ms + lowest_buffered_range.duration_ms if lowest_buffered_range else 0
+            next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
 
-        self._client_abr_state.player_time_ms = max(
-            min_buffered_duration_ms,
-            # next request policy backoff_time_ms is the minimum to increment player_time_ms by
-            self._client_abr_state.player_time_ms + next_request_backoff_ms,
-        )
+            self._client_abr_state.player_time_ms = max(
+                min_buffered_duration_ms,
+                # next request policy backoff_time_ms is the minimum to increment player_time_ms by
+                self._client_abr_state.player_time_ms + next_request_backoff_ms,
+            )
 
-        if not self._live_metadata and len(current_buffered_ranges) == len(self._initialized_formats):
-            if all(
-                (
-                    initialized_format.buffered_ranges
-                    and initialized_format.buffered_ranges[-1].end_segment_index == initialized_format.total_sequences
-                )
-                for initialized_format in self._initialized_formats.values()
-            ):
-                self.write_sabr_debug(f'Reached last segment for all formats, assuming end of media')
-                self._consumed = True
+            # Check if the latest segment is the last one of each format (if data is available)
+            if not self._live_metadata and len(current_buffered_ranges) == len(self._initialized_formats):
+                if all(
+                    (
+                        initialized_format.buffered_ranges
+                        and initialized_format.buffered_ranges[-1].end_segment_index is not None
+                        and initialized_format.total_sequences is not None
+                        and initialized_format.buffered_ranges[-1].end_segment_index == initialized_format.total_sequences
+                    )
+                    for initialized_format in self._initialized_formats.values()
+                ):
+                    self.write_sabr_debug(f'Reached last segment for all formats, assuming end of media')
+                    self._consumed = True
 
-        if self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
-            if self._live_metadata:
-                self._client_abr_state.player_time_ms = self._total_duration_ms
-                wait_time = next_request_backoff_ms + self.live_segment_target_duration_sec * 1000
-                self.write_sabr_debug(f'is live, sleeping {wait_time / 1000} seconds for next fragment')
-                time.sleep(wait_time / 1000)
+            # Check if we have exceeded the total duration of the media (if not live),
+            #  or wait for the next segment (if live)
+            # TODO: should consider live stream timestamp in LIVE_METADATA perhaps?
+            if self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
+                if self._live_metadata:
+                    self._client_abr_state.player_time_ms = self._total_duration_ms
+                    wait_time = next_request_backoff_ms + self.live_segment_target_duration_sec * 1000
+                    self.write_sabr_debug(f'is live, sleeping {wait_time / 1000} seconds for next fragment')
+                    time.sleep(wait_time / 1000)
 
-            else:
-                self.write_sabr_debug(f'End of media (player time ms {self._client_abr_state.player_time_ms} >= total duration ms {self._total_duration_ms})')
-                self._consumed = True
+                else:
+                    self.write_sabr_debug(f'End of media (player time ms {self._client_abr_state.player_time_ms} >= total duration ms {self._total_duration_ms})')
+                    self._consumed = True
 
-        if not self._consumed:
-            self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
+            if not self._consumed:
+                self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
 
         self._next_request_policy = None
         self._sabr_seeked = False
         self._redirected = False
+        self._is_retry = False
 
     def _report_retry(self, err, count, retries, fatal=True):
         RetryManager.report_retry(
@@ -354,16 +361,17 @@ class SABRStream:
             self._logger.debug(f'SABR: {msg.strip()}')
 
     def parse_ump_response(self, response):
+        # xxx: this should handle the same response being provided multiple times with without issue. need to test.
         ump = UMPParser(response)
         for part in ump.iter_parts():
             if part.part_type == UMPPartType.MEDIA_HEADER:
                 self.process_media_header(part)
             elif part.part_type == UMPPartType.MEDIA:
-                yield from self.process_media(part)
+                yield self.process_media(part)
             elif part.part_type == UMPPartType.MEDIA_END:
                 self.process_media_end(part)
             elif part.part_type == UMPPartType.STREAM_PROTECTION_STATUS:
-                yield from self.process_stream_protection_status(part)
+                yield self.process_stream_protection_status(part)
             elif part.part_type == UMPPartType.SABR_REDIRECT:
                 self.process_sabr_redirect(part)
             elif part.part_type == UMPPartType.FORMAT_INITIALIZATION_METADATA:
@@ -478,7 +486,9 @@ class SABRStream:
             self.write_sabr_debug(f'Initialized Format not found for header ID {header_id}', part=part)
             return
 
-        yield MediaSabrPart(
+        self._request_had_data = True
+
+        return MediaSabrPart(
             requested_format=initialized_format.requested_format,
             format_id=current_sequence.format_id,
             player_time_ms=self._client_abr_state.player_time_ms,
@@ -486,8 +496,6 @@ class SABRStream:
             fragment_count=self._live_metadata and self._live_metadata.head_sequence_number,
             data=part.data[1:],
         )
-
-        self._request_had_data = True
 
     def process_media_end(self, part: UMPPart):
         header_id = part.data[0]
@@ -502,26 +510,30 @@ class SABRStream:
 
     def process_stream_protection_status(self, part: UMPPart):
         sps = protobug.loads(part.data, StreamProtectionStatus)
-        self.write_sabr_debug(f'Status: {StreamProtectionStatus.Status(sps.status).name}', protobug_obj=sps, part=part, data=part.data)
+        self.write_sabr_debug(f'Status: {StreamProtectionStatus.Status(sps.status).name}. SPS Retry: {self._sps_retry_count}', protobug_obj=sps, part=part, data=part.data)
         if sps.status == StreamProtectionStatus.Status.OK:
+            self._sps_retry_count = 0
             if self.po_token:
-                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.OK)
-            else:
-                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.NOT_REQUIRED)
+                return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.OK)
+            return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.NOT_REQUIRED)
         elif sps.status == StreamProtectionStatus.Status.ATTESTATION_PENDING:
+            if sps.max_retries is not None:
+                # Should not happen
+                self._logger.warning(f'StreamProtectionStatus: Attestation Pending has a retry count of {sps.max_retries}{bug_reports_message()}')
             if self.po_token:
-                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING)
-            else:
-                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING_MISSING)
+                return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING)
+            return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING_MISSING)
         elif sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
-            if self.po_token:
-                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.INVALID)
-            else:
-                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.MISSING)
+            if self._sps_retry_count >= (sps.max_retries or self._default_max_sps_retries):
+                raise DownloadError(f'StreamProtectionStatus: Attestation Required ({"Invalid" if self.po_token else "Missing"} PO Token)')
 
-        # todo: use retries before throwing an error
-        if sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
-            raise DownloadError('StreamProtectionStatus: Attestation Required')
+            # xxx: temporal network error retries, host changes due to errors will count towards the SPS retry
+            self._sps_retry_count += 1
+            self._is_retry = True
+
+            if self.po_token:
+                return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.INVALID)
+            return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.MISSING)
 
     def process_sabr_redirect(self, part: UMPPart):
         sabr_redirect = protobug.loads(part.data, SabrRedirect)
@@ -547,6 +559,7 @@ class SABRStream:
                         parsed_url._replace(netloc=fallback).geturl(), {'fallback_count': fallback_count})
                     self._logger.warning(f'Failed to connect to GVS host {parsed_url.netloc}. Retrying with GVS host {fallback}')
                     self._redirected = True
+                    self._is_retry = True
                     return
 
         self._logger.debug(f'GVS fallback failed - no working hosts available. Bad hosts: {self._bad_hosts}')
@@ -557,7 +570,7 @@ class SABRStream:
             if requested_format.format_id:
                 if (
                     requested_format.format_id.itag == format_init_metadata.format_id.itag
-                    and requested_format.format_id.last_modified == format_init_metadata.format_id.last_modified
+                    and requested_format.format_id.lmt == format_init_metadata.format_id.lmt
                     and requested_format.format_id.xtags == format_init_metadata.format_id.xtags
                 ):
                     return requested_format
