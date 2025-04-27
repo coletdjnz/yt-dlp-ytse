@@ -71,7 +71,7 @@ class FormatInitializationMetadata:
     video_id: protobug.String = protobug.field(1, default=None)
     format_id: FormatId = protobug.field(2, default=None)
     end_time_ms: typing.Optional[protobug.Int32] = protobug.field(3, default=None)
-    field4: typing.Optional[protobug.Int32] = protobug.field(4, default=None)
+    total_segments: typing.Optional[protobug.Int32] = protobug.field(4, default=None)
     mime_type: typing.Optional[protobug.String] = protobug.field(5, default=None)
     init_range: typing.Optional[InitRange] = protobug.field(6, default=None)
     index_range: typing.Optional[IndexRange] = protobug.field(7, default=None)

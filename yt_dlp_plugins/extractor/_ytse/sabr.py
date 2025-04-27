@@ -1,3 +1,4 @@
+from __future__ import annotations
 import base64
 import dataclasses
 import enum
@@ -35,7 +36,6 @@ from .protos import (
 from .ump import UMPParser, UMPPartType, UMPPart
 
 
-
 class FormatType(enum.Enum):
     AUDIO = 'audio'
     VIDEO = 'video'
@@ -48,6 +48,9 @@ class FormatRequest:
     quality: typing.Optional[str] = None
     height: typing.Optional[str] = None
 
+
+class SabrStreamConsumedError(DownloadError):
+    pass
 
 @dataclasses.dataclass
 class SabrPart:
@@ -62,6 +65,7 @@ class MediaSabrPart(SabrPart):
     start_bytes: int = 0
     fragment_index: int = None
     fragment_count: int = None
+    is_init_fragment: bool = False
     data: bytes = b''
 
 
@@ -100,6 +104,7 @@ class InitializedFormat:
     mime_type: str = None
     sequences: dict[int, Sequence] = dataclasses.field(default_factory=dict)
     buffered_ranges: List[BufferedRange] = dataclasses.field(default_factory=list)
+    total_sequences: int = None
 
 
 def get_format_key(format_id: FormatId):
@@ -119,75 +124,99 @@ class SABRStream:
         reload_config_fn: typing.Callable[[], tuple[str, str]] = None,
         start_time_ms: int = 0,
         debug=False,
-        po_token: str = None
+        po_token: str = None,
+        http_retries: int = 3,
     ):
 
         self._logger = logger
         self._debug = debug
         self._urlopen = urlopen
-        self._requested_video_formats: List[FormatRequest] = video_formats or []
-        self._requested_audio_formats: List[FormatRequest] = audio_formats or []
+
+        self.requested_video_formats: List[FormatRequest] = video_formats or []
+        self.requested_audio_formats: List[FormatRequest] = audio_formats or []
         self.server_abr_streaming_url = server_abr_streaming_url
         self.video_playback_ustreamer_config = video_playback_ustreamer_config
         self.po_token = po_token
         self.reload_config_fn = reload_config_fn
         self.client_info = client_info
-        self.client_abr_state: ClientAbrState = None
-        self.next_request_policy: NextRequestPolicy = None
-        self.initialized_formats: dict[str, InitializedFormat] = {}
-        self.header_ids: dict[int, Sequence] = {}
-        self.live_metadata: LiveMetadata = None
-        self.total_duration_ms = None
-        self.sabr_seeked = False
         self.live_segment_target_duration_sec = live_segment_target_duration_sec or 5
-        self._request_had_data = False
-        self._bad_hosts = []
-        self._redirected = False
-        self._start_time_ms = start_time_ms
-
-        # note: video only is not supported
-        enabled_track_types_bitfield = 0  # Both
-        if len(self._requested_video_formats) == 0:
-            enabled_track_types_bitfield = 1  # Audio only
-
-        # todo: handle non-format-id format requests
-        self.selectable_audio_format_ids = [f.format_id for f in self._requested_audio_formats]
-        self.selectable_video_format_ids = [f.format_id for f in self._requested_video_formats]
-
-        self.write_sabr_debug(f'starting at: {self._start_time_ms}')
-        # initialize client abr state
-        self.client_abr_state = ClientAbrState(
-            player_time_ms=self._start_time_ms,
-            enabled_track_types_bitfield=enabled_track_types_bitfield,
-        )
+        self.start_time_ms = start_time_ms
+        self.http_retries = http_retries
 
         if self.live_segment_target_duration_sec:
             self.write_sabr_debug(f'using live_segment_target_duration_sec: {self.live_segment_target_duration_sec}')
 
+        # State management
+        self._requests_no_data = 0
+        self._request_number = 0
 
-        self.requests_no_data = 0
-        self.request_number = 0
+        self._redirected = False
+        self._request_had_data = False
+        self._sabr_seeked = False
+        self._header_ids: dict[int, Sequence] = {}
+        self._bad_hosts = []
+
+        self._total_duration_ms = None
+
+        self._selected_audio_format_ids = []
+        self._selected_video_format_ids = []
+        self._next_request_policy: NextRequestPolicy | None = None
+        self._live_metadata: LiveMetadata | None = None
+        self._client_abr_state: ClientAbrState
+        self._initialized_formats: dict[str, InitializedFormat] = {}
+
+        self._consumed = False
+
+        self._initialize_cabr_state()
 
     def __iter__(self):
-        # todo: create an isolated iterable?
-        while self.live_metadata or not self.total_duration_ms or self.client_abr_state.player_time_ms < self.total_duration_ms:
+        return self.iter_parts()
+
+    def _initialize_cabr_state(self):
+        # note: video only is not supported
+        enabled_track_types_bitfield = 0  # Both
+        if len(self.requested_video_formats) == 0:
+            enabled_track_types_bitfield = 1  # Audio only
+
+        # todo: handle non-format-id format requests
+        self._selected_audio_format_ids = [f.format_id for f in self.requested_audio_formats]
+        self._selected_video_format_ids = [f.format_id for f in self.requested_video_formats]
+
+        self.write_sabr_debug(f'starting at: {self.start_time_ms}')
+        self._client_abr_state = ClientAbrState(
+            player_time_ms=self.start_time_ms,
+            enabled_track_types_bitfield=enabled_track_types_bitfield,
+        )
+
+    def finished(self):
+        return (
+            self._consumed
+            or (
+
+            )
+        )
+
+    def iter_parts(self, max_requests=-1):
+        if self._consumed:
+            raise SabrStreamConsumedError('SABR stream has already been consumed')
+
+        while not self._consumed:
             self.process_expiry()
-            po_token = self.po_token
             vpabr = VideoPlaybackAbrRequest(
-                client_abr_state=self.client_abr_state,
-                selectable_video_format_ids=self.selectable_video_format_ids,
-                selectable_audio_format_ids=self.selectable_audio_format_ids,
+                client_abr_state=self._client_abr_state,
+                selectable_video_format_ids=self._selected_video_format_ids,
+                selectable_audio_format_ids=self._selected_audio_format_ids,
                 selected_format_ids=[
-                    initialized_format.format_id for initialized_format in self.initialized_formats.values()
+                    initialized_format.format_id for initialized_format in self._initialized_formats.values()
                 ],
                 video_playback_ustreamer_config=base64.urlsafe_b64decode(self.video_playback_ustreamer_config),
                 streamer_context=StreamerContext(
-                     po_token=po_token and base64.urlsafe_b64decode(po_token),
-                     playback_cookie=self.next_request_policy and protobug.dumps(self.next_request_policy.playback_cookie),
+                     po_token=self.po_token and base64.urlsafe_b64decode(self.po_token),
+                     playback_cookie=self._next_request_policy and protobug.dumps(self._next_request_policy.playback_cookie),
                      client_info=self.client_info
                  ),
                 buffered_ranges=[
-                    buffered_range for initialized_format in self.initialized_formats.values()
+                    buffered_range for initialized_format in self._initialized_formats.values()
                     for buffered_range in initialized_format.buffered_ranges
                 ],
             )
@@ -198,8 +227,7 @@ class SABRStream:
             # Attempt to retry the request if there is an intermittent network issue.
             # Otherwise, it may be a server issue, so try to fall back to another host.
             try:
-                # todo: configurable retries
-                for retry in RetryManager(3, self._report_retry):
+                for retry in RetryManager(self.http_retries, self._report_retry):
                     response = None
                     try:
                         response = self._urlopen(
@@ -207,10 +235,11 @@ class SABRStream:
                                 url=self.server_abr_streaming_url,
                                 method='POST',
                                 data=payload,
-                                query={'rn': self.request_number},
+                                query={'rn': self._request_number},
                                 headers={'content-type': 'application/x-protobuf'}
                             )
                         )
+                        self._request_number += 1
                         # Handle read errors too
                         yield from filter(None, self.parse_ump_response(response))
                     except TransportError as e:
@@ -224,61 +253,81 @@ class SABRStream:
 
             except HTTPError as e:
                 self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
-
                 # on 5xx errors, if a retry does not work, try falling back to another host?
                 if 500 <= e.status < 600:
                     self.process_gvs_fallback()
-                    continue
-
-                raise DownloadError(f'HTTP Error: {e.status} - {e.reason}')
+                else:
+                    raise DownloadError(f'HTTP Error: {e.status} - {e.reason}')
 
             except TransportError as e:
                 self._logger.warning(f'Transport Error: {e}')
                 self.process_gvs_fallback()
-                continue
 
-            if len(self.header_ids):
-                self._logger.warning(f'Extraneous header IDs left: {list(self.header_ids.values())}')
-                self.header_ids.clear()
+            self._update_request_state()
+            self._prepare_next_request()
 
-            if not self._request_had_data:
-                # todo: how to prevent youtube sending us in a redirect loop?
-                if self.requests_no_data >= 2 and not self._redirected:
-                    if self.total_duration_ms and self.client_abr_state.player_time_ms < self.total_duration_ms:
-                        # todo: test streams that go down temporary. Should we increase this?
-                        self._logger.warning('No data found in three consecutive requests - assuming end of video')
-                    break  # stream finished?
-                self.requests_no_data += 1
-            else:
-                self.requests_no_data = 0
+        self._consumed = True
 
-            current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self.initialized_formats.values() if initialized_format.buffered_ranges]
+    def _update_request_state(self):
+        if not self._request_had_data:
+            # todo: how to prevent youtube sending us in a redirect loop?
+            if self._requests_no_data >= 2 and not self._redirected:
+                if self._total_duration_ms and self._client_abr_state.player_time_ms < self._total_duration_ms:
+                    # todo: test streams that go down temporary. Should we increase this?
+                    self._logger.warning('No data found in three consecutive requests - assuming end of video')
+                self._consumed = True  # stream finished?
+            self._requests_no_data += 1
+        else:
+            self._requests_no_data = 0
 
-            # choose format that is the most behind
-            lowest_buffered_range = min(current_buffered_ranges, key=lambda x: x.start_time_ms + x.duration_ms) if current_buffered_ranges else None
+        self._request_had_data = False
 
-            min_buffered_duration_ms = lowest_buffered_range.start_time_ms + lowest_buffered_range.duration_ms if lowest_buffered_range else 0
+    def _prepare_next_request(self):
+        if len(self._header_ids):
+            self._logger.warning(f'Extraneous header IDs left: {list(self._header_ids.values())}')
+            self._header_ids.clear()
 
-            next_request_backoff_ms = (self.next_request_policy and self.next_request_policy.backoff_time_ms) or 0
+        current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self._initialized_formats.values() if initialized_format.buffered_ranges]
 
-            self.client_abr_state.player_time_ms = max(
-                min_buffered_duration_ms,
-                # next request policy backoff_time_ms is the minimum to increment player_time_ms by
-                self.client_abr_state.player_time_ms + next_request_backoff_ms,
-            )
+        # choose format that is the most behind
+        lowest_buffered_range = min(current_buffered_ranges, key=lambda x: x.start_time_ms + x.duration_ms) if current_buffered_ranges else None
+        min_buffered_duration_ms = lowest_buffered_range.start_time_ms + lowest_buffered_range.duration_ms if lowest_buffered_range else 0
+        next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
 
-            if self.live_metadata and self.total_duration_ms and self.client_abr_state.player_time_ms >= self.total_duration_ms:
-                self.client_abr_state.player_time_ms = self.total_duration_ms
+        self._client_abr_state.player_time_ms = max(
+            min_buffered_duration_ms,
+            # next request policy backoff_time_ms is the minimum to increment player_time_ms by
+            self._client_abr_state.player_time_ms + next_request_backoff_ms,
+        )
+
+        if not self._live_metadata and len(current_buffered_ranges) == len(self._initialized_formats):
+            if all(
+                (
+                    initialized_format.buffered_ranges
+                    and initialized_format.buffered_ranges[-1].end_segment_index == initialized_format.total_sequences
+                )
+                for initialized_format in self._initialized_formats.values()
+            ):
+                self.write_sabr_debug(f'Reached last segment for all formats, assuming end of media')
+                self._consumed = True
+
+        if self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
+            if self._live_metadata:
+                self._client_abr_state.player_time_ms = self._total_duration_ms
                 wait_time = next_request_backoff_ms + self.live_segment_target_duration_sec * 1000
-                self.write_sabr_debug(f'sleeping {wait_time / 1000} seconds')
+                self.write_sabr_debug(f'is live, sleeping {wait_time / 1000} seconds for next fragment')
                 time.sleep(wait_time / 1000)
 
-            self.next_request_policy = None
-            self.sabr_seeked = False
-            self._request_had_data = False
-            self._redirected = False
+            else:
+                self.write_sabr_debug(f'End of media (player time ms {self._client_abr_state.player_time_ms} >= total duration ms {self._total_duration_ms})')
+                self._consumed = True
 
-            self.request_number += 1
+        if not self._consumed:
+            self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
+
+        self._next_request_policy = None
+        self._sabr_seeked = False
+        self._redirected = False
 
     def _report_retry(self, err, count, retries, fatal=True):
         RetryManager.report_retry(
@@ -337,7 +386,7 @@ class SABRStream:
         if not media_header.format_id:
             raise DownloadError(f'Format ID not found in MediaHeader (media_header={media_header})')
 
-        initialized_format = self.initialized_formats.get(get_format_key(media_header.format_id))
+        initialized_format = self._initialized_formats.get(get_format_key(media_header.format_id))
         if not initialized_format:
             self.write_sabr_debug(f'Initialized format not found for {media_header.format_id}', part=part)
             return
@@ -358,7 +407,7 @@ class SABRStream:
             media_header.duration_ms
             or (time_range and time_range.get_duration_ms()))
 
-        estimated_duration_ms = self.live_metadata and self.live_segment_target_duration_sec * 1000
+        estimated_duration_ms = self._live_metadata and self.live_segment_target_duration_sec * 1000
 
         duration_ms = actual_duration_ms or estimated_duration_ms or 0
 
@@ -373,14 +422,14 @@ class SABRStream:
             initialized_format=initialized_format
         )
 
-        self.header_ids[media_header.header_id] = initialized_format.sequences[sequence_number or 0]
+        self._header_ids[media_header.header_id] = initialized_format.sequences[sequence_number or 0]
 
         if not is_init_segment:
             current_buffered_range = initialized_format.buffered_ranges[-1] if initialized_format.buffered_ranges else None
 
             # todo: if we sabr seek, then we get two segments in same request, we end up creating two buffered ranges.
             # Perhaps we should have sabr_seeked as part of initialized_format?
-            if not current_buffered_range or self.sabr_seeked:
+            if not current_buffered_range or self._sabr_seeked:
                 initialized_format.buffered_ranges.append(BufferedRange(
                     format_id=media_header.format_id,
                     start_time_ms=start_ms,
@@ -394,7 +443,7 @@ class SABRStream:
                     )
                 ))
                 self.write_sabr_debug(
-                    part=part, message=f'Created new buffered range for {media_header.format_id} (sabr seeked={self.sabr_seeked}): {initialized_format.buffered_ranges[-1]}')
+                    part=part, message=f'Created new buffered range for {media_header.format_id} (sabr seeked={self._sabr_seeked}): {initialized_format.buffered_ranges[-1]}')
                 return
 
             end_segment_index = current_buffered_range.end_segment_index or 0
@@ -403,7 +452,7 @@ class SABRStream:
 
             current_buffered_range.end_segment_index = sequence_number
 
-            if not self.live_metadata or actual_duration_ms:
+            if not self._live_metadata or actual_duration_ms:
                 # We need to increment both duration_ms and time_range.duration
                 current_buffered_range.duration_ms += duration_ms
                 current_buffered_range.time_range.duration += duration_ms
@@ -418,8 +467,7 @@ class SABRStream:
 
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
-
-        current_sequence = self.header_ids.get(header_id)
+        current_sequence = self._header_ids.get(header_id)
         if not current_sequence:
             self.write_sabr_debug(f'Header ID {header_id} not found', part=part)
             return
@@ -433,10 +481,10 @@ class SABRStream:
         yield MediaSabrPart(
             requested_format=initialized_format.requested_format,
             format_id=current_sequence.format_id,
-            player_time_ms=self.client_abr_state.player_time_ms,
+            player_time_ms=self._client_abr_state.player_time_ms,
             fragment_index=current_sequence.sequence_number,
-            fragment_count=self.live_metadata and self.live_metadata.head_sequence_number,
-            data=part.data[1:]
+            fragment_count=self._live_metadata and self._live_metadata.head_sequence_number,
+            data=part.data[1:],
         )
 
         self._request_had_data = True
@@ -444,13 +492,13 @@ class SABRStream:
     def process_media_end(self, part: UMPPart):
         header_id = part.data[0]
         self.write_sabr_debug(f'Header ID: {header_id}', part=part)
-        self.header_ids.pop(header_id, None)
+        self._header_ids.pop(header_id, None)
 
     def process_live_metadata(self, part: UMPPart):
-        self.live_metadata = protobug.loads(part.data, LiveMetadata)
-        self.write_sabr_debug(part=part, protobug_obj=self.live_metadata, data=part.data)
-        if self.live_metadata.head_sequence_time_ms:
-            self.total_duration_ms = self.live_metadata.head_sequence_time_ms
+        self._live_metadata = protobug.loads(part.data, LiveMetadata)
+        self.write_sabr_debug(part=part, protobug_obj=self._live_metadata, data=part.data)
+        if self._live_metadata.head_sequence_time_ms:
+            self._total_duration_ms = self._live_metadata.head_sequence_time_ms
 
     def process_stream_protection_status(self, part: UMPPart):
         sps = protobug.loads(part.data, StreamProtectionStatus)
@@ -505,7 +553,7 @@ class SABRStream:
         raise DownloadError('Unable to find a working Google Video Server. Is your connection okay?')
 
     def _find_matching_requested_format(self, format_init_metadata: FormatInitializationMetadata):
-        for requested_format in self._requested_audio_formats + self._requested_video_formats:
+        for requested_format in self.requested_audio_formats + self.requested_video_formats:
             if requested_format.format_id:
                 if (
                     requested_format.format_id.itag == format_init_metadata.format_id.itag
@@ -523,7 +571,7 @@ class SABRStream:
 
         initialized_format_key = get_format_key(fmt_init_metadata.format_id)
 
-        if initialized_format_key in self.initialized_formats:
+        if initialized_format_key in self._initialized_formats:
             self.write_sabr_debug('Format already initialized', part)
             return
 
@@ -542,24 +590,25 @@ class SABRStream:
             mime_type=fmt_init_metadata.mime_type,
             video_id=fmt_init_metadata.video_id,
             requested_format=matching_requested_format,
+            total_sequences=fmt_init_metadata.total_segments,
         )
-        self.total_duration_ms = max(self.total_duration_ms or 0, fmt_init_metadata.end_time_ms or 0, duration_ms or 0)
+        self._total_duration_ms = max(self._total_duration_ms or 0, fmt_init_metadata.end_time_ms or 0, duration_ms or 0)
 
-        self.initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
+        self._initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
 
         self.write_sabr_debug(f'Initialized Format: {initialized_format}', part=part)
 
     def process_next_request_policy(self, part: UMPPart):
-        self.next_request_policy = protobug.loads(part.data, NextRequestPolicy)
-        self.write_sabr_debug(part=part, protobug_obj=self.next_request_policy, data=part.data)
+        self._next_request_policy = protobug.loads(part.data, NextRequestPolicy)
+        self.write_sabr_debug(part=part, protobug_obj=self._next_request_policy, data=part.data)
 
     def process_sabr_seek(self, part: UMPPart):
         sabr_seek = protobug.loads(part.data, SabrSeek)
         seek_to = math.ceil((sabr_seek.seek_time / sabr_seek.timescale) * 1000)
         self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
         self.write_sabr_debug(f'Seeking to {seek_to}ms')
-        self.client_abr_state.player_time_ms = seek_to
-        self.sabr_seeked = True
+        self._client_abr_state.player_time_ms = seek_to
+        self._sabr_seeked = True
 
     def process_sabr_error(self, part: UMPPart):
         sabr_error = protobug.loads(part.data, SabrError)
