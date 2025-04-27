@@ -271,8 +271,10 @@ class SABRStream:
                 if self._total_duration_ms and self._client_abr_state.player_time_ms < self._total_duration_ms:
                     # todo: if not live, this should probably be a fatal error
                     # todo: test streams that go down temporary. Should we increase this?
+                    # todo: for streams, check against live metadata latest segment time and watch if it increases
+                    #  configure a "wait for end" stream var in seconds?
                     self._logger.warning('No data found in three consecutive requests - assuming end of video')
-                self._consumed = True  # stream finished?
+                    self._consumed = True  # stream finished?
             self._requests_no_data += 1
         else:
             self._requests_no_data = 0
