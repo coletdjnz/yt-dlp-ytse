@@ -274,7 +274,7 @@ class SABRStream:
                     # todo: for streams, check against live metadata latest segment time and watch if it increases
                     #  configure a "wait for end" stream var in seconds?
                     self._logger.warning('No data found in three consecutive requests - assuming end of video')
-                    self._consumed = True  # stream finished?
+                self._consumed = True  # stream finished?
             self._requests_no_data += 1
         else:
             self._requests_no_data = 0
