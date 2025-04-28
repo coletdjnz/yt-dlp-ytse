@@ -126,6 +126,7 @@ class SABRStream:
         debug=False,
         po_token: str = None,
         http_retries: int = 3,
+        live_end_wait_sec: int = 10,
     ):
 
         self._logger = logger
@@ -142,12 +143,14 @@ class SABRStream:
         self.live_segment_target_duration_sec = live_segment_target_duration_sec or 5
         self.start_time_ms = start_time_ms
         self.http_retries = http_retries
+        self.live_end_wait_sec = live_end_wait_sec
 
         if self.live_segment_target_duration_sec:
             self.write_sabr_debug(f'using live_segment_target_duration_sec: {self.live_segment_target_duration_sec}')
 
         # State management
         self._requests_no_data = 0
+        self._timestamp_no_data = None
         self._request_number = 0
 
         self._sps_retry_count = 0
@@ -259,36 +262,31 @@ class SABRStream:
                 self._logger.warning(f'Transport Error: {e}')
                 self.process_gvs_fallback()
 
-            self._update_request_state()
             self._prepare_next_request()
 
         self._consumed = True
-
-    def _update_request_state(self):
-        if not self._request_had_data and not self._is_retry:
-            # todo: how to prevent youtube sending us in a redirect loop?
-            if self._requests_no_data >= 2 and not self._redirected:
-                if self._total_duration_ms and self._client_abr_state.player_time_ms < self._total_duration_ms:
-                    # todo: if not live, this should probably be a fatal error
-                    # todo: test streams that go down temporary. Should we increase this?
-                    # todo: for streams, check against live metadata latest segment time and watch if it increases
-                    #  configure a "wait for end" stream var in seconds?
-                    self._logger.warning('No data found in three consecutive requests - assuming end of video')
-                self._consumed = True  # stream finished?
-            self._requests_no_data += 1
-        else:
-            self._requests_no_data = 0
-
-        self._request_had_data = False
 
     def _prepare_next_request(self):
         if len(self._header_ids):
             self._logger.warning(f'Extraneous header IDs left: {list(self._header_ids.values())}')
             self._header_ids.clear()
 
+        wait_seconds = 0
+
         # Do not update client abr state if we are retrying
         # For the case we fail midway through a response after reading some media data, but didn't get all of it.
         if not self._is_retry:
+            # Don't count retries e.g. SPS.
+            # As any retry logic should not be sending us in infinite requests
+            if not self._request_had_data:
+                self._requests_no_data += 1
+                if not self._timestamp_no_data:
+                    self._timestamp_no_data = time.time()
+            else:
+                self._requests_no_data = 0
+                self._timestamp_no_data = None
+
+
             current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self._initialized_formats.values() if initialized_format.buffered_ranges]
 
             # choose format that is the most behind
@@ -303,7 +301,11 @@ class SABRStream:
             )
 
             # Check if the latest segment is the last one of each format (if data is available)
-            if not self._live_metadata and len(current_buffered_ranges) == len(self._initialized_formats):
+            if (
+                not self._live_metadata
+                and self._initialized_formats
+                and len(current_buffered_ranges) == len(self._initialized_formats)
+            ):
                 if all(
                     (
                         initialized_format.buffered_ranges
@@ -322,10 +324,15 @@ class SABRStream:
             if self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
                 if self._live_metadata:
                     self._client_abr_state.player_time_ms = self._total_duration_ms
-                    wait_time = next_request_backoff_ms + self.live_segment_target_duration_sec * 1000
-                    self.write_sabr_debug(f'is live, sleeping {wait_time / 1000} seconds for next fragment')
-                    time.sleep(wait_time / 1000)
-
+                    if (
+                        self._requests_no_data > 3
+                        and self._timestamp_no_data
+                        and self._timestamp_no_data < time.time() + self.live_end_wait_sec
+                    ):
+                        self._logger.debug(f'No fragments received for at least {self.live_end_wait_sec} seconds, assuming end of live stream')
+                        self._consumed = True
+                    else:
+                        wait_seconds = (next_request_backoff_ms // 1000) + self.live_segment_target_duration_sec
                 else:
                     self.write_sabr_debug(f'End of media (player time ms {self._client_abr_state.player_time_ms} >= total duration ms {self._total_duration_ms})')
                     self._consumed = True
@@ -333,10 +340,24 @@ class SABRStream:
             if not self._consumed:
                 self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
 
+
+            # Guard against receiving no data before end of video/stream
+            if (
+                (not self._total_duration_ms or (self._client_abr_state.player_time_ms < self._total_duration_ms))
+                and not self._consumed
+                and self._requests_no_data > 3
+            ):
+                raise DownloadError('No data found in three consecutive requests')
+
         self._next_request_policy = None
         self._sabr_seeked = False
         self._redirected = False
         self._is_retry = False
+        self._request_had_data = False
+
+        if wait_seconds:
+            self.write_sabr_debug(f'sleeping {wait_seconds} seconds for next fragment')
+            time.sleep(wait_seconds)
 
     def _report_retry(self, err, count, retries, fatal=True):
         RetryManager.report_retry(
