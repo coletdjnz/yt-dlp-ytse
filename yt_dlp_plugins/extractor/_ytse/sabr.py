@@ -287,13 +287,23 @@ class SABRStream:
                 self._timestamp_no_data = None
 
 
-            current_buffered_ranges = [initialized_format.buffered_ranges[-1] for initialized_format in self._initialized_formats.values() if initialized_format.buffered_ranges]
+            # TODO: should consider storing only one buffered range?
+            # TODO: For concurrency, we'll likely sync SabrStream buffered ranges to avoid re-downloading segments. This may require more than one buffered range?
+            # In this case, we'll need to find the buffered range to use by player_time_ms?
+            current_buffered_ranges = [
+                initialized_format.buffered_ranges[-1]
+                for initialized_format in self._initialized_formats.values() if initialized_format.buffered_ranges
+            ]
 
             # choose format that is the most behind
             lowest_buffered_range = min(current_buffered_ranges, key=lambda x: x.start_time_ms + x.duration_ms) if current_buffered_ranges else None
             min_buffered_duration_ms = lowest_buffered_range.start_time_ms + lowest_buffered_range.duration_ms if lowest_buffered_range else 0
             next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
 
+            # TODO: we should also consider incrementing player_time_ms if we already had all segments (i.e. check which segments we skipped and why)
+            #  Generally, next_request_policy backoff_time_ms will set this but we should also default it to not rely on it
+
+            request_player_time = self._client_abr_state.player_time_ms
             self._client_abr_state.player_time_ms = max(
                 min_buffered_duration_ms,
                 # next request policy backoff_time_ms is the minimum to increment player_time_ms by
@@ -301,12 +311,12 @@ class SABRStream:
             )
 
             # Check if the latest segment is the last one of each format (if data is available)
+            # TODO: fallback livestream handling when we don't have live_metadata
             if (
                 not self._live_metadata
                 and self._initialized_formats
                 and len(current_buffered_ranges) == len(self._initialized_formats)
-            ):
-                if all(
+                and all(
                     (
                         initialized_format.buffered_ranges
                         and initialized_format.buffered_ranges[-1].end_segment_index is not None
@@ -314,16 +324,18 @@ class SABRStream:
                         and initialized_format.buffered_ranges[-1].end_segment_index == initialized_format.total_sequences
                     )
                     for initialized_format in self._initialized_formats.values()
-                ):
-                    self.write_sabr_debug(f'Reached last segment for all formats, assuming end of media')
-                    self._consumed = True
+                )
+            ):
+                self.write_sabr_debug(f'Reached last segment for all formats, assuming end of media')
+                self._consumed = True
 
             # Check if we have exceeded the total duration of the media (if not live),
             #  or wait for the next segment (if live)
             # TODO: should consider live stream timestamp in LIVE_METADATA perhaps?
-            if self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
+            elif self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
                 if self._live_metadata:
                     self._client_abr_state.player_time_ms = self._total_duration_ms
+                    # TODO: we need this for live streams in the case there is no live_metadata
                     if (
                         self._requests_no_data > 3
                         and self._timestamp_no_data
@@ -337,13 +349,10 @@ class SABRStream:
                     self.write_sabr_debug(f'End of media (player time ms {self._client_abr_state.player_time_ms} >= total duration ms {self._total_duration_ms})')
                     self._consumed = True
 
-            if not self._consumed:
-                self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
-
-
             # Guard against receiving no data before end of video/stream
             if (
                 (not self._total_duration_ms or (self._client_abr_state.player_time_ms < self._total_duration_ms))
+                and request_player_time == self._client_abr_state.player_time_ms
                 and not self._consumed
                 and self._requests_no_data > 3
             ):
@@ -354,6 +363,10 @@ class SABRStream:
         self._redirected = False
         self._is_retry = False
         self._request_had_data = False
+
+        # TODO: clear buffered ranges that are not behind or in front of current player time ms
+        if not self._consumed:
+            self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
 
         if wait_seconds:
             self.write_sabr_debug(f'sleeping {wait_seconds} seconds for next fragment')
