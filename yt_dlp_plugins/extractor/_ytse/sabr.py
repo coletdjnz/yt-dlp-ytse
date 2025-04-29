@@ -310,6 +310,8 @@ class SABRStream:
                 self._timestamp_no_data = None
 
 
+            # TODO: we should not use buffered ranges to calculate the next request.
+            #  Rather, use the initialized formats and their durations.
             # TODO: should consider storing only one buffered range?
             # TODO: For concurrency, we'll likely sync SabrStream buffered ranges to avoid re-downloading segments. This may require more than one buffered range?
             # In this case, we'll need to find the buffered range to use by player_time_ms?
