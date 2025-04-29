@@ -35,18 +35,31 @@ from .protos import (
 )
 from .ump import UMPParser, UMPPartType, UMPPart
 
+@dataclasses.dataclass
+class FormatSelector:
+    format_ids: List[FormatId] = dataclasses.field(default_factory=list)
+    discard_media: bool = False
 
-class FormatType(enum.Enum):
-    AUDIO = 'audio'
-    VIDEO = 'video'
-
+    def match(self, format_id: FormatId = None, **kwargs) -> bool:
+        return format_id in self.format_ids
 
 @dataclasses.dataclass
-class FormatRequest:
-    format_type: FormatType
-    format_id: FormatId
-    quality: typing.Optional[str] = None
-    height: typing.Optional[str] = None
+class AudioSelector(FormatSelector):
+
+    def match(self, format_id: FormatId = None, mime_type: str = None, **kwargs) -> bool:
+        return (
+            super().match(format_id, mime_type=mime_type, **kwargs)
+            or (not self.format_ids and mime_type and mime_type.lower().startswith('audio'))
+        )
+
+@dataclasses.dataclass
+class VideoSelector(FormatSelector):
+
+    def match(self, format_id: FormatId = None, mime_type: str = None, **kwargs) -> bool:
+        return (
+            super().match(format_id, mime_type=mime_type, **kwargs)
+            or (not self.format_ids and mime_type and mime_type.lower().startswith('video'))
+        )
 
 
 class SabrStreamConsumedError(DownloadError):
@@ -59,7 +72,7 @@ class SabrPart:
 
 @dataclasses.dataclass
 class MediaSabrPart(SabrPart):
-    requested_format: FormatRequest
+    format_selector: FormatSelector
     format_id: FormatId
     player_time_ms: int = 0
     start_bytes: int = 0
@@ -98,7 +111,7 @@ class Sequence:
 class InitializedFormat:
     format_id: FormatId
     video_id: str
-    requested_format: FormatRequest
+    format_selector: FormatSelector | None = None
     duration_ms: int = 0
     end_time_ms: int = 0
     mime_type: str = None
@@ -119,7 +132,8 @@ class SABRStream:
         server_abr_streaming_url: str,
         video_playback_ustreamer_config: str,
         client_info: ClientInfo,
-        video_formats: List[FormatRequest] = None, audio_formats: List[FormatRequest] = None,
+        audio_selection: AudioSelector = None,
+        video_selection: VideoSelector = None,
         live_segment_target_duration_sec: int = None,
         reload_config_fn: typing.Callable[[], tuple[str, str]] = None,
         start_time_ms: int = 0,
@@ -133,8 +147,6 @@ class SABRStream:
         self._debug = debug
         self._urlopen = urlopen
 
-        self.requested_video_formats: List[FormatRequest] = video_formats or []
-        self.requested_audio_formats: List[FormatRequest] = audio_formats or []
         self.server_abr_streaming_url = server_abr_streaming_url
         self.video_playback_ustreamer_config = video_playback_ustreamer_config
         self.po_token = po_token
@@ -147,6 +159,12 @@ class SABRStream:
 
         if self.live_segment_target_duration_sec:
             self.write_sabr_debug(f'using live_segment_target_duration_sec: {self.live_segment_target_duration_sec}')
+
+        self._audio_format_selector = audio_selection
+        self._video_format_selector = video_selection
+
+        if not self._audio_format_selector and not self._video_format_selector:
+            raise DownloadError('No audio or video requested')
 
         # State management
         self._requests_no_data = 0
@@ -182,12 +200,16 @@ class SABRStream:
     def _initialize_cabr_state(self):
         # note: video only is not supported
         enabled_track_types_bitfield = 0  # Both
-        if len(self.requested_video_formats) == 0:
+        if not self._video_format_selector:
             enabled_track_types_bitfield = 1  # Audio only
+            # Guard against audio-only returning video formats
+            self._video_format_selector = VideoSelector(discard_media=True)
 
-        # todo: handle non-format-id format requests
-        self._selected_audio_format_ids = [f.format_id for f in self.requested_audio_formats]
-        self._selected_video_format_ids = [f.format_id for f in self.requested_video_formats]
+        if not self._audio_format_selector:
+            self._audio_format_selector = AudioSelector(discard_media=True)
+
+        self._selected_audio_format_ids = self._audio_format_selector.format_ids
+        self._selected_video_format_ids = self._video_format_selector.format_ids
 
         self.write_sabr_debug(f'starting at: {self.start_time_ms}')
         self._client_abr_state = ClientAbrState(
@@ -203,8 +225,8 @@ class SABRStream:
             self.process_expiry()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self._client_abr_state,
-                selectable_video_format_ids=self._selected_video_format_ids,
-                selectable_audio_format_ids=self._selected_audio_format_ids,
+                selected_video_format_ids=self._selected_video_format_ids,
+                selected_audio_format_ids=self._selected_audio_format_ids,
                 selected_format_ids=[
                     initialized_format.format_id for initialized_format in self._initialized_formats.values()
                 ],
@@ -522,10 +544,14 @@ class SABRStream:
             self.write_sabr_debug(f'Initialized Format not found for header ID {header_id}', part=part)
             return
 
+        # Will count discard (ignored) media as a request with data... as something is at least coming through
         self._request_had_data = True
 
+        if initialized_format.format_selector.discard_media:
+            return
+
         return MediaSabrPart(
-            requested_format=initialized_format.requested_format,
+            format_selector=initialized_format.format_selector,
             format_id=current_sequence.format_id,
             player_time_ms=self._client_abr_state.player_time_ms,
             fragment_index=current_sequence.sequence_number,
@@ -570,6 +596,7 @@ class SABRStream:
             if self.po_token:
                 return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.INVALID)
             return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.MISSING)
+        return None
 
     def process_sabr_redirect(self, part: UMPPart):
         sabr_redirect = protobug.loads(part.data, SabrRedirect)
@@ -601,36 +628,33 @@ class SABRStream:
         self._logger.debug(f'GVS fallback failed - no working hosts available. Bad hosts: {self._bad_hosts}')
         raise DownloadError('Unable to find a working Google Video Server. Is your connection okay?')
 
-    def _find_matching_requested_format(self, format_init_metadata: FormatInitializationMetadata):
-        for requested_format in self.requested_audio_formats + self.requested_video_formats:
-            if requested_format.format_id:
-                if (
-                    requested_format.format_id.itag == format_init_metadata.format_id.itag
-                    and requested_format.format_id.lmt == format_init_metadata.format_id.lmt
-                    and requested_format.format_id.xtags == format_init_metadata.format_id.xtags
-                ):
-                    return requested_format
-            else:
-                # todo: add more matching criteria if the requested format does not have a format_id
-                pass
+    def _match_format_selector(self, format_init_metadata: FormatInitializationMetadata):
+        for format_selector in (self._video_format_selector, self._audio_format_selector):
+            if not format_selector:
+                continue
+            if format_selector.match(format_id=format_init_metadata.format_id, mime_type=format_init_metadata.mime_type):
+                return format_selector
+        return None
 
     def process_format_initialization_metadata(self, part: UMPPart):
         fmt_init_metadata = protobug.loads(part.data, FormatInitializationMetadata)
         self.write_sabr_debug(part=part, protobug_obj=fmt_init_metadata, data=part.data)
 
         initialized_format_key = get_format_key(fmt_init_metadata.format_id)
-
         if initialized_format_key in self._initialized_formats:
             self.write_sabr_debug('Format already initialized', part)
             return
 
-        matching_requested_format = self._find_matching_requested_format(fmt_init_metadata)
+        format_selector = self._match_format_selector(fmt_init_metadata)
 
-        if not matching_requested_format:
-            self.write_sabr_debug(f'Format {initialized_format_key} not in requested formats.. Ignoring', part=part)
+        if not format_selector:
+            self._logger.warning(f'Format {initialized_format_key} not in requested formats.. Ignoring')
             return
 
-        duration_ms = fmt_init_metadata.duration and math.ceil((fmt_init_metadata.duration / fmt_init_metadata.duration_timescale) * 1000)
+        duration_ms = (
+                fmt_init_metadata.duration
+                and math.ceil((fmt_init_metadata.duration / fmt_init_metadata.duration_timescale) * 1000)
+        )
 
         initialized_format = InitializedFormat(
             format_id=fmt_init_metadata.format_id,
@@ -638,11 +662,10 @@ class SABRStream:
             end_time_ms=fmt_init_metadata.end_time_ms,
             mime_type=fmt_init_metadata.mime_type,
             video_id=fmt_init_metadata.video_id,
-            requested_format=matching_requested_format,
+            format_selector=format_selector,
             total_sequences=fmt_init_metadata.total_segments,
         )
         self._total_duration_ms = max(self._total_duration_ms or 0, fmt_init_metadata.end_time_ms or 0, duration_ms or 0)
-
         self._initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
 
         self.write_sabr_debug(f'Initialized Format: {initialized_format}', part=part)

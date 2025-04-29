@@ -16,7 +16,7 @@ from ..protos import (
     FormatId,
     ClientInfo
 )
-from ..sabr import SABRStream, FormatRequest, FormatType, MediaSabrPart, PoTokenStatusSabrPart
+from ..sabr import SABRStream, AudioSelector, VideoSelector, MediaSabrPart, PoTokenStatusSabrPart
 
 
 @dataclasses.dataclass
@@ -145,7 +145,7 @@ class SABRFD(FileDownloader):
             itag = int_or_none(sabr_config.get('itag'))
             sabr_format_group_config['formats'].append({
                 'format_id': itag and FormatId(itag=itag, lmt=int_or_none(sabr_config.get('last_modified')), xtags=sabr_config.get('xtags')),
-                'format_type': FormatType.VIDEO if f.get('acodec') == 'none' else FormatType.AUDIO,
+                'format_type': 'video' if f.get('acodec') == 'none' else 'audio',
                 'quality': sabr_config.get('quality'),
                 'height': sabr_config.get('height'),
                 'filename': f.get('filepath', filename),
@@ -160,26 +160,20 @@ class SABRFD(FileDownloader):
 
             # Group formats into video_audio pairs. SABR can currently download video+audio or audio.
             # Just video requires the audio stream to be discarded.
-            audio_formats = (f for f in formats if f['format_type'] == FormatType.AUDIO)
-            video_formats = (f for f in formats if f['format_type'] == FormatType.VIDEO)
+            audio_formats = (f for f in formats if f['format_type'] == 'audio')
+            video_formats = (f for f in formats if f['format_type'] == 'video')
             for audio_format, video_format in itertools.zip_longest(audio_formats, video_formats):
                 audio_format_writer = audio_format and SABRFDWriter(self, audio_format.get('filename'), audio_format['info_dict'], 0)
                 video_format_writer = video_format and SABRFDWriter(self, video_format.get('filename'), video_format['info_dict'], 1 if audio_format else 0)
                 if not audio_format and video_format:
                     self.write_debug('Downloading a video stream without audio. SABR does not allow video-only, so an additional audio stream will be downloaded but discarded.')
 
-                video_format_request = FormatRequest(
-                        format_id=video_format['format_id'],
-                        format_type=FormatType.VIDEO,
-                        quality=video_format['quality'],
-                        height=video_format['height'],
+                video_format_request = VideoSelector(
+                        format_ids=[video_format['format_id']],
                     ) if video_format else None
 
-                audio_format_request = FormatRequest(
-                        format_id=audio_format['format_id'],
-                        format_type=FormatType.AUDIO,
-                        quality=audio_format['quality'],
-                        height=audio_format['height'],
+                audio_format_request = AudioSelector(
+                        format_ids=[audio_format['format_id']],
                     ) if audio_format else None
                 stream = SABRStream(
                     urlopen=self.ydl.urlopen,
@@ -188,8 +182,8 @@ class SABRFD(FileDownloader):
                     server_abr_streaming_url=format_group['server_abr_streaming_url'],
                     video_playback_ustreamer_config=format_group['video_playback_ustreamer_config'],
                     po_token=format_group['po_token_fn'](),
-                    video_formats=[video_format_request] if video_format_request else [],
-                    audio_formats=[audio_format_request] if audio_format_request else [],
+                    video_selection=video_format_request,
+                    audio_selection=audio_format_request,
                     start_time_ms=format_group['start_time_ms'],
                     client_info=format_group['client_info'],
                     reload_config_fn=format_group['reload_config_fn'],
@@ -203,18 +197,20 @@ class SABRFD(FileDownloader):
                             print(f'part type is PoTokenStatusSabrPart: {part}')
 
                         elif isinstance(part, MediaSabrPart):
-                            if part.requested_format is audio_format_request:
+                            if audio_format_request and part.format_selector is audio_format_request:
                                 audio_format_writer.write(part.data, SABRStatus(
                                     start_bytes=part.start_bytes,
                                     fragment_index=part.fragment_index,
                                     fragment_count=part.fragment_count,
                                 ))
-                            elif part.requested_format is video_format_request:
+                            elif video_format_request and part.format_selector is video_format_request:
                                 video_format_writer.write(part.data, SABRStatus(
                                     start_bytes=part.start_bytes,
                                     fragment_index=part.fragment_index,
                                     fragment_count=part.fragment_count,
                                 ))
+                            else:
+                                print(f'Unknown format selector: {part.format_selector}')
 
                         else:
                             print(f'Unknown part type: {part}')
