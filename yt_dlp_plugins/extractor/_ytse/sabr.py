@@ -115,6 +115,7 @@ class InitializedFormat:
     duration_ms: int = 0
     end_time_ms: int = 0
     mime_type: str = None
+    # Current segment in the sequence. Set to None to break the sequence and allow a seek.
     current_segment: Segment | None = None
     init_segment: Segment | None = None
     buffered_ranges: List[BufferedRange] = dataclasses.field(default_factory=list)
@@ -126,6 +127,21 @@ def get_format_key(format_id: FormatId):
 
 
 class SABRStream:
+
+    """
+
+    A YouTube SABR (Server Abr Bit Rate) client implementation that is not bound to a real player time.
+    It essentially converts the server side controlled playback to client side controlled playback.
+
+    (todo: better description lol)
+
+    It presents an iterator that yields the next available segments and other metadata.
+
+    Buffer tracking:
+    SabrStream keeps track of what segments it has seen and tells the server to not send them again.
+    This includes after a seek (e.g. SABR_SEEK).
+    """
+
     def __init__(
         self,
         urlopen: typing.Callable[[Request], Response],
@@ -310,24 +326,49 @@ class SABRStream:
                 self._timestamp_no_data = None
 
 
-            # TODO: we should not use buffered ranges to calculate the next request.
-            #  Rather, use the initialized formats and their durations.
-            # TODO: should consider storing only one buffered range?
-            # TODO: For concurrency, we'll likely sync SabrStream buffered ranges to avoid re-downloading segments. This may require more than one buffered range?
-            # In this case, we'll need to find the buffered range to use by player_time_ms?
-            current_buffered_ranges = [
-                initialized_format.buffered_ranges[-1]
-                for initialized_format in self._initialized_formats.values() if initialized_format.buffered_ranges
-            ]
+            for izf in self._initialized_formats.values():
+                if not izf.current_segment:
+                    continue
+                # Check if there is two buffered ranges where the end lines up with the start of the other.
+                # This could happen in the case of where we seeked backwards (for whatever reason, e.g. livestream)
+                # In this case, we should consider a seek as acceptable to the end of the other.
+                # Note: It is assumed a segment is only present in one buffered range - it should not be allowed in multiple (by process media header)
+                prev_buffered_range = next(
+                    (br for br in izf.buffered_ranges if br.end_segment_index == izf.current_segment.sequence_number),
+                    None
+                )
+                if prev_buffered_range and len(get_br_chain(prev_buffered_range, izf.buffered_ranges)) >= 2:
+                    self.write_sabr_debug(f'Found two buffered ranges that line up, allowing a seek for format {izf.format_id}')
+                    izf.current_segment = None
 
-            # choose format that is the most behind
-            lowest_buffered_range = min(current_buffered_ranges, key=lambda x: x.start_time_ms + x.duration_ms) if current_buffered_ranges else None
-            min_buffered_duration_ms = lowest_buffered_range.start_time_ms + lowest_buffered_range.duration_ms if lowest_buffered_range else 0
+            # For each initialized format:
+            #   1. find the buffered format that matches player_time_ms.
+            #   2. find the last buffered range in sequence (in case multiple are joined together)
+            latest_buffered_ranges = []
+            for izf in self._initialized_formats.values():
+                for br in izf.buffered_ranges:
+                    if br.start_time_ms <= self._client_abr_state.player_time_ms <= br.start_time_ms + br.duration_ms:
+                        chain = get_br_chain(br, izf.buffered_ranges)
+                        latest_buffered_ranges.append(chain[-1])
+                        break # There should only be one chain for player_time_ms
+
+
+            # Then set the player_time_ms to the lowest buffered range end of the initialized formats
+            lowest_izf_buffered_range = min(latest_buffered_ranges, key=lambda br: br.start_time_ms + br.duration_ms)
+            min_buffered_duration_ms = lowest_izf_buffered_range.start_time_ms + lowest_izf_buffered_range.duration_ms
+
+            if len(latest_buffered_ranges) != len(self._initialized_formats):
+                # Missing a buffered range for a format - likely a format was seeked?
+                # In this case, consider player_time_ms to be our correct next time
+                # May? happen in the case of:
+                # 1. SABR_SEEK to Time outside both formats buffered ranges
+                # 2. ONE of the formats returns data after the SABR_SEEK in that request
+                min_buffered_duration_ms = min(min_buffered_duration_ms, self._client_abr_state.player_time_ms)
+
             next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
 
             # TODO: we should also consider incrementing player_time_ms if we already had all segments (i.e. check which segments we skipped and why)
             #  Generally, next_request_policy backoff_time_ms will set this but we should also default it to not rely on it
-
             request_player_time = self._client_abr_state.player_time_ms
             self._client_abr_state.player_time_ms = max(
                 min_buffered_duration_ms,
@@ -337,11 +378,10 @@ class SABRStream:
 
             # Check if the latest segment is the last one of each format (if data is available)
             # TODO: fallback livestream handling when we don't have live_metadata
-            # TODO: check current sequence number instead of buffered ranges
             if (
                 not self._live_metadata
                 and self._initialized_formats
-                and len(current_buffered_ranges) == len(self._initialized_formats)
+                and len(latest_buffered_ranges) == len(self._initialized_formats)
                 and all(
                     (
                         initialized_format.buffered_ranges
@@ -385,7 +425,6 @@ class SABRStream:
                 raise DownloadError('No data found in three consecutive requests')
 
         self._next_request_policy = None
-        self._sabr_seeked = False
         self._redirected = False
         self._is_retry = False
         self._request_had_data = False
@@ -464,7 +503,17 @@ class SABRStream:
         sequence_number, is_init_segment = media_header.sequence_number, media_header.is_init_segment
 
         if sequence_number is None and not media_header.is_init_segment:
-            raise DownloadError(f'Sequence number not found in MediaHeader (media_header={media_header})', part=part)
+            raise DownloadError(f'Sequence number not found in MediaHeader (media_header={media_header})')
+
+        # Guard: Check if sequence number is within any existing buffered range
+        # The server should not send us any segments that are already buffered
+        if not is_init_segment and any(
+            (
+                br.start_segment_index <= sequence_number <= br.end_segment_index
+                for br in initialized_format.buffered_ranges
+            )
+        ):
+            raise DownloadError(f'Segment {sequence_number} already exists in buffered ranges')
 
         # Note: previous segment should never be an init segment
         previous_segment = initialized_format.current_segment
@@ -511,7 +560,7 @@ class SABRStream:
 
         initialized_format.current_segment = segment
 
-        # Try find matching buffered range this segment belongs to
+        # Try to find a buffered range for this segment in sequence
         buffered_range = next(
             (br for br in initialized_format.buffered_ranges if br.end_segment_index == sequence_number - 1),
             None
@@ -539,6 +588,8 @@ class SABRStream:
         if not self._live_metadata or actual_duration_ms:
             # We need to increment both duration_ms and time_range.duration
             buffered_range.duration_ms += duration_ms
+            if buffered_range.time_range.timescale != 1000:
+                raise DownloadError(f'Buffered range timescale bad: {buffered_range.time_range.timescale} != 1000')
             buffered_range.time_range.duration += duration_ms
         else:
             # Attempt to keep in sync with livestream, as the segment duration target is not always perfect.
@@ -701,7 +752,6 @@ class SABRStream:
         self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
         self.write_sabr_debug(f'Seeking to {seek_to}ms')
         self._client_abr_state.player_time_ms = seek_to
-        self._sabr_seeked = True
 
         # Clear latest segment as will no longer be in order
         for initialized_format in self._initialized_formats.values():
@@ -734,3 +784,16 @@ class SABRStream:
             self.server_abr_streaming_url, self.video_playback_ustreamer_config = self.reload_config_fn()
         except (TransportError, HTTPError) as e:
             raise DownloadError(f'Failed to refresh SABR streaming URL: {e}') from e
+
+
+def get_br_chain(start_buffered_range: BufferedRange, buffered_ranges: List[BufferedRange]) -> List[BufferedRange]:
+    # TODO: test
+    # Return the continuous buffered range chain starting from the given buffered range
+    # Note: It is assumed a segment is only present in one buffered range - it should not be allowed in multiple (by process media header)
+    chain = [start_buffered_range]
+    for br in sorted(buffered_ranges, key=lambda br: br.start_segment_index):
+        if br.start_segment_index == chain[-1].end_segment_index + 1:
+            chain.append(br)
+        elif br.start_segment_index > chain[-1].end_segment_index + 1:
+            break
+    return chain
