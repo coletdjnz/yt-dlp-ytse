@@ -240,6 +240,10 @@ class SabrStream:
 
         self._initialize_cabr_state()
 
+    def close(self):
+        self._consumed = True
+
+
     def __iter__(self):
         return self.iter_parts()
 

@@ -99,7 +99,7 @@ class SABRFD(FileDownloader):
     def real_download(self, filename, info_dict):
         requested_formats = info_dict.get('requested_formats') or [info_dict]
         sabr_format_groups = collections.defaultdict(dict, {})
-
+        is_test = self.params.get('test', False)
         for idx, f in enumerate(requested_formats):
             sabr_config = f.get('_sabr_config')
             client_name = sabr_config.get('client_name')
@@ -193,7 +193,11 @@ class SABRFD(FileDownloader):
                 self._prepare_multiline_status(int(bool(audio_format and video_format)) + 1)
 
                 try:
+                    total_bytes = 0
                     for part in stream:
+                        if is_test and total_bytes >= self._TEST_FILE_SIZE:
+                            stream.close()
+                            break
                         if isinstance(part, PoTokenStatusSabrPart):
                             # TODO: implement once PO Token Provider PR is merged
                             if part.status in (
@@ -211,6 +215,7 @@ class SABRFD(FileDownloader):
                                 pass
 
                         elif isinstance(part, MediaSabrPart):
+                            total_bytes += len(part.data)
                             if audio_format_request and part.format_selector is audio_format_request:
                                 audio_format_writer.write(part.data, SABRStatus(
                                     start_bytes=part.start_bytes,
