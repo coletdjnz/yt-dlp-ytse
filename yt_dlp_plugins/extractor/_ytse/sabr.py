@@ -132,6 +132,8 @@ class Segment:
     sequence_number: int = 0
     content_length: int = 0
     initialized_format: 'InitializedFormat' = None
+    # Whether duration_ms is an estimate
+    duration_estimated: bool = False
 
 
 @dataclasses.dataclass
@@ -165,6 +167,7 @@ class SabrStream:
     This includes after a seek (e.g. SABR_SEEK).
 
     TODO:
+    - Retry logic is completely broken and causes the video to skip all over the place
     - Handling for live_metadata not being present
     - Improved logging for debugging (unexpected errors / warnings should contain enough context to debug them)
     - Unit testing various scenarios, particularly the edge cases
@@ -298,48 +301,51 @@ class SabrStream:
             self.write_sabr_debug(f'video_playback_ustreamer_config: {self.video_playback_ustreamer_config}')
             self.write_sabr_debug(f'Sending videoplayback SABR request: {vpabr}')
 
-            # Attempt to retry the request if there is an intermittent network issue.
-            # Otherwise, it may be a server issue, so try to fall back to another host.
-            try:
-                for retry in RetryManager(self.http_retries, self._report_retry):
-                    response = None
-                    try:
-                        response = self._urlopen(
-                            Request(
-                                url=self.server_abr_streaming_url,
-                                method='POST',
-                                data=payload,
-                                query={'rn': self._request_number},
-                                headers={'content-type': 'application/x-protobuf'}
-                            )
-                        )
-                        self._request_number += 1
-                        # Handle read errors too
-                        yield from self.parse_ump_response(response)
-                    except TransportError as e:
-                        self._logger.warning(f'Transport Error: {e}')
-                        retry.error = e
-                        continue
-                    finally:
-                        # For when response is not entirely read, ensure it is closed.
-                        if response and not response.closed:
-                            response.close()
+            response = self._request_sabr(payload)
 
-            except HTTPError as e:
-                self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
-                # on 5xx errors, if a retry does not work, try falling back to another host?
-                if 500 <= e.status < 600:
-                    self.process_gvs_fallback()
-                else:
-                    raise SabrStreamError(f'HTTP Error: {e.status} - {e.reason}')
-
-            except TransportError as e:
-                self._logger.warning(f'Transport Error: {e}')
-                self.process_gvs_fallback()
-
+            # TODO: handle errors on read. However, need to be careful as the state has been partially changed
+            # But may not have retrieved all parts
+            # e.g. When we get a MediaHeader, we increase the buffered range then. Perhaps we should do it on the MediaEnd?
+            yield from self.parse_ump_response(response)
             yield from self._prepare_next_request()
 
         self._consumed = True
+
+    def _request_sabr(self, payload):
+        # Attempt to retry the request if there is an intermittent network issue.
+        # Otherwise, it may be a server issue, so try to fall back to another host.
+        try:
+            for retry in RetryManager(self.http_retries, self._report_retry):
+                try:
+                    response = self._urlopen(
+                        Request(
+                            url=self.server_abr_streaming_url,
+                            method='POST',
+                            data=payload,
+                            query={'rn': self._request_number},
+                            headers={'content-type': 'application/x-protobuf'}
+                        )
+                    )
+                    self._request_number += 1
+                    return response
+                except TransportError as e:
+                    self._logger.warning(f'Transport Error: {e}')
+                    retry.error = e
+                    continue
+            return None
+        except HTTPError as e:
+            self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
+            # on 5xx errors, if a retry does not work, try falling back to another host?
+            if 500 <= e.status < 600:
+                self.process_gvs_fallback()
+                return None
+            else:
+                raise SabrStreamError(f'HTTP Error: {e.status} - {e.reason}')
+
+        except TransportError as e:
+            self._logger.warning(f'Transport Error: {e}')
+            self.process_gvs_fallback()
+            return None
 
     def _prepare_next_request(self):
         if len(self._header_ids):
@@ -561,7 +567,7 @@ class SabrStream:
 
         # Note: previous segment should never be an init segment
         previous_segment = initialized_format.current_segment
-        if previous_segment:
+        if previous_segment and not is_init_segment:
             if sequence_number <= previous_segment.sequence_number:
                 self.write_sabr_debug(f'Segment {sequence_number} before or same as previous segment, skipping as probably already seen', part=part)
                 return
@@ -569,6 +575,10 @@ class SabrStream:
             if sequence_number != previous_segment.sequence_number + 1:
                 # Bail out as the segment is not in order when it should be
                 raise SabrStreamError(f'Segment sequence number mismatch: {previous_segment.sequence_number + 1} != {sequence_number}')
+
+        if initialized_format.init_segment and is_init_segment:
+            self.write_sabr_debug(f'Init segment {sequence_number} already seen, skipping', part=part)
+            return
 
         time_range = media_header.time_range
         start_ms = media_header.start_ms or (time_range and time_range.get_start_ms()) or 0
@@ -580,7 +590,12 @@ class SabrStream:
             media_header.duration_ms
             or (time_range and time_range.get_duration_ms()))
 
-        estimated_duration_ms = self._live_metadata and self.live_segment_target_duration_sec * 1000
+        estimated_duration_ms = None
+        if self._live_metadata:
+            estimated_duration_ms = self.live_segment_target_duration_sec * 1000
+
+        # TODO: should this really default to 0?
+        #  Is there any valid case for that?
         duration_ms = actual_duration_ms or estimated_duration_ms or 0
 
         segment = Segment(
@@ -591,57 +606,13 @@ class SabrStream:
             sequence_number=sequence_number,
             content_length=media_header.content_length,
             start_ms=start_ms,
-            initialized_format=initialized_format
+            initialized_format=initialized_format,
+            duration_estimated=not actual_duration_ms
         )
 
         self._header_ids[media_header.header_id] = segment
 
-        if is_init_segment:
-            initialized_format.init_segment = segment
-            # Do not create a buffered range for init segments
-            return
-
-        initialized_format.current_segment = segment
-
-        # Try to find a buffered range for this segment in sequence
-        buffered_range = next(
-            (br for br in initialized_format.buffered_ranges if br.end_segment_index == sequence_number - 1),
-            None
-        )
-
-        if not buffered_range:
-            # Create a new buffered range
-            initialized_format.buffered_ranges.append(BufferedRange(
-                format_id=media_header.format_id,
-                start_time_ms=start_ms,
-                duration_ms=duration_ms,
-                start_segment_index=sequence_number,
-                end_segment_index=sequence_number,
-                time_range=TimeRange(
-                    start=start_ms,
-                    duration=duration_ms,
-                    timescale=1000  # ms
-                )
-            ))
-            self.write_sabr_debug(
-                part=part, message=f'Created new buffered range for {media_header.format_id} {initialized_format.buffered_ranges[-1]}')
-            return
-
-        buffered_range.end_segment_index = sequence_number
-        if not self._live_metadata or actual_duration_ms:
-            # We need to increment both duration_ms and time_range.duration
-            buffered_range.duration_ms += duration_ms
-            if buffered_range.time_range.timescale != 1000:
-                raise SabrStreamError(f'Buffered range timescale bad: {buffered_range.time_range.timescale} != 1000')
-            buffered_range.time_range.duration += duration_ms
-        else:
-            # Attempt to keep in sync with livestream, as the segment duration target is not always perfect.
-            # The server seems to care more about the segment index than the duration.
-            if buffered_range.start_time_ms > start_ms:
-                raise SabrStreamError(f'Buffered range start time mismatch: {buffered_range.start_time_ms} > {start_ms}')
-
-            new_duration = (start_ms - buffered_range.start_time_ms) + estimated_duration_ms
-            buffered_range.duration_ms = buffered_range.time_range.duration = new_duration
+        self.write_sabr_debug(f'Initialized Media Header {media_header.header_id} for sequence {sequence_number} (init_segment={is_init_segment})', part=part)
 
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
@@ -650,20 +621,14 @@ class SabrStream:
             self.write_sabr_debug(f'Header ID {header_id} not found', part=part)
             return
 
-        initialized_format = segment.initialized_format
-
-        if not initialized_format:
-            self.write_sabr_debug(f'Initialized Format not found for header ID {header_id}', part=part)
-            return
-
         # Will count discard (ignored) media as a request with data... as something is at least coming through
         self._request_had_data = True
 
-        if initialized_format.format_selector.discard_media:
+        if segment.initialized_format.format_selector.discard_media:
             return
 
         yield MediaSabrPart(
-            format_selector=initialized_format.format_selector,
+            format_selector=segment.initialized_format.format_selector,
             format_id=segment.format_id,
             player_time_ms=self._client_abr_state.player_time_ms,
             fragment_index=segment.sequence_number,
@@ -676,7 +641,60 @@ class SabrStream:
         # TODO: should probably publish a media end event so it knows when to stop writing fragment
         header_id = part.data[0]
         self.write_sabr_debug(f'Header ID: {header_id}', part=part)
-        self._header_ids.pop(header_id, None)
+        segment: Segment = self._header_ids.pop(header_id, None)
+
+        if not segment:
+            self._logger.warning(f'Received a MediaEnd for an unknown or already finished header ID {header_id}')
+            return
+
+        self.write_sabr_debug(f'MediaEnd for {segment.format_id} (sequence {segment.sequence_number})', part=part)
+
+        if segment.is_init_segment:
+            segment.initialized_format.init_segment = segment
+            # Do not create a buffered range for init segments
+            return
+
+        segment.initialized_format.current_segment = segment
+
+        # Try to find a buffered range for this segment in sequence
+        buffered_range = next(
+            (br for br in segment.initialized_format.buffered_ranges if br.end_segment_index == segment.sequence_number - 1),
+            None
+        )
+
+        if not buffered_range:
+            # Create a new buffered range
+            segment.initialized_format.buffered_ranges.append(BufferedRange(
+                format_id=segment.initialized_format.format_id,
+                start_time_ms=segment.start_ms,
+                duration_ms=segment.duration_ms,
+                start_segment_index=segment.sequence_number,
+                end_segment_index=segment.sequence_number,
+                time_range=TimeRange(
+                    start=segment.start_ms,
+                    duration=segment.duration_ms,
+                    timescale=1000  # ms
+                )
+            ))
+            self.write_sabr_debug(
+                part=part, message=f'Created new buffered range for {segment.initialized_format.format_id} {segment.initialized_format.buffered_ranges[-1]}')
+            return
+
+        buffered_range.end_segment_index = segment.sequence_number
+        if not self._live_metadata or not segment.duration_estimated:
+            # We need to increment both duration_ms and time_range.duration
+            buffered_range.duration_ms += segment.duration_ms
+            if buffered_range.time_range.timescale != 1000:
+                raise SabrStreamError(f'Buffered range timescale bad: {buffered_range.time_range.timescale} != 1000')
+            buffered_range.time_range.duration += segment.duration_ms
+        else:
+            # Attempt to keep in sync with livestream, as the segment duration target is not always perfect.
+            # The server seems to care more about the segment index than the duration.
+            if buffered_range.start_time_ms > segment.start_ms:
+                raise SabrStreamError(f'Buffered range start time mismatch: {buffered_range.start_time_ms} > {segment.start_ms}')
+
+            new_duration = (segment.start_ms - buffered_range.start_time_ms) + segment.duration_ms
+            buffered_range.duration_ms = buffered_range.time_range.duration = new_duration
 
     def process_live_metadata(self, part: UMPPart):
         self._live_metadata = protobug.loads(part.data, LiveMetadata)
