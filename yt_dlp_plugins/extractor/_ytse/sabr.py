@@ -158,7 +158,7 @@ class SabrStream:
     - Unit testing various scenarios, particularly the edge cases
     - Increment player_time_ms if we received segments in the request (inc skipped as already seen)
     - Yield a SabrPart on SABR_SEEK (and maybe other seeks too?)
-    - Player response refresh should be handled by the caller. We just yield a SabrPart.
+    - Decouple logger from YDL
     """
 
     def __init__(

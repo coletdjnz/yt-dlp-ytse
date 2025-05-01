@@ -195,7 +195,20 @@ class SABRFD(FileDownloader):
                 try:
                     for part in stream:
                         if isinstance(part, PoTokenStatusSabrPart):
-                            print(f'part type is PoTokenStatusSabrPart: {part}')
+                            # TODO: implement once PO Token Provider PR is merged
+                            if part.status in (
+                                part.PoTokenStatus.INVALID,
+                                part.PoTokenStatus.PENDING,
+                            ):
+                                # Fetch a PO token with bypass_cache=True
+                                # (ensure we create a new one)
+                                pass
+                            elif part.status in (
+                                part.PoTokenStatus.MISSING,
+                                part.PoTokenStatus.PENDING_MISSING
+                            ):
+                                # Fetch a PO Token, bypass_cache=False
+                                pass
 
                         elif isinstance(part, MediaSabrPart):
                             if audio_format_request and part.format_selector is audio_format_request:
@@ -211,11 +224,11 @@ class SABRFD(FileDownloader):
                                     fragment_count=part.fragment_count,
                                 ))
                             else:
-                                print(f'Unknown format selector: {part.format_selector}')
+                                self.report_warning(f'Unknown format selector: {part.format_selector}')
 
                         elif isinstance(part, RefreshPlayerResponseSabrPart):
+                            self.to_screen(f'Refreshing player response; Reason: {part.reason}')
                             # In-place refresh - not ideal but should work in most cases
-
                             if not format_group['reload_config_fn']:
                                 raise self.report_warning(
                                     'No reload config function found - cannot refresh SABR streaming URL.'
@@ -227,7 +240,7 @@ class SABRFD(FileDownloader):
                                 self.report_warning(f'Failed to refresh SABR streaming URL: {e}')
 
                         else:
-                            print(f'Unknown part type: {part}')
+                            self.to_screen(f'Unknown part type: {part}')
 
                 except KeyboardInterrupt:
                     if not info_dict.get('is_live'):
