@@ -109,6 +109,18 @@ class RefreshPlayerResponseSabrPart(SabrPart):
 
     reason: Reason
 
+@dataclasses.dataclass
+class MediaSeekSabrPart(SabrPart):
+    # Lets the caller know the media sequence for a format may change
+    class Reason(enum.Enum):
+        UNKNOWN = enum.auto()
+        SERVER_SEEK = enum.auto()  # SABR_SEEK from server
+        BUFFER_SEEK = enum.auto()  # Seeking as next fragment is already buffered
+
+    reason: Reason
+    format_id: FormatId
+    format_selector: FormatSelector
+
 
 @dataclasses.dataclass
 class Segment:
@@ -321,7 +333,7 @@ class SabrStream:
                 self._logger.warning(f'Transport Error: {e}')
                 self.process_gvs_fallback()
 
-            self._prepare_next_request()
+            yield from self._prepare_next_request()
 
         self._consumed = True
 
@@ -360,6 +372,11 @@ class SabrStream:
                 if prev_buffered_range and len(get_br_chain(prev_buffered_range, izf.buffered_ranges)) >= 2:
                     self.write_sabr_debug(f'Found two buffered ranges that line up, allowing a seek for format {izf.format_id}')
                     izf.current_segment = None
+                    yield MediaSeekSabrPart(
+                        reason=MediaSeekSabrPart.Reason.BUFFER_SEEK,
+                        format_id=izf.format_id,
+                        format_selector=izf.format_selector,
+                    )
 
             # For each initialized format:
             #   1. find the buffered format that matches player_time_ms.
@@ -503,7 +520,7 @@ class SabrStream:
             elif part.part_type == UMPPartType.LIVE_METADATA:
                 self.process_live_metadata(part)
             elif part.part_type == UMPPartType.SABR_SEEK:
-                self.process_sabr_seek(part)
+                yield from self.process_sabr_seek(part)
             elif part.part_type == UMPPartType.SABR_ERROR:
                 self.process_sabr_error(part)
             else:
@@ -769,8 +786,6 @@ class SabrStream:
         self.write_sabr_debug(part=part, protobug_obj=self._next_request_policy, data=part.data)
 
     def process_sabr_seek(self, part: UMPPart):
-        # TODO: disallow sabr seek for normal videos?
-        #  or should we yield a SabrPart and let the caller handle it?
         sabr_seek = protobug.loads(part.data, SabrSeek)
         seek_to = math.ceil((sabr_seek.seek_time / sabr_seek.timescale) * 1000)
         self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
@@ -780,6 +795,11 @@ class SabrStream:
         # Clear latest segment as will no longer be in order
         for initialized_format in self._initialized_formats.values():
             initialized_format.current_segment = None
+            yield MediaSeekSabrPart(
+                reason=MediaSeekSabrPart.Reason.SERVER_SEEK,
+                format_id=initialized_format.format_id,
+                format_selector=initialized_format.format_selector,
+            )
 
     def process_sabr_error(self, part: UMPPart):
         sabr_error = protobug.loads(part.data, SabrError)

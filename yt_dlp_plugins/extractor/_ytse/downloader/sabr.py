@@ -18,7 +18,7 @@ from ..protos import (
     ClientInfo
 )
 from ..sabr import SabrStream, AudioSelector, VideoSelector, MediaSabrPart, PoTokenStatusSabrPart, \
-    RefreshPlayerResponseSabrPart
+    RefreshPlayerResponseSabrPart, MediaSeekSabrPart
 
 
 @dataclasses.dataclass
@@ -233,14 +233,20 @@ class SABRFD(FileDownloader):
                                 raise self.report_warning(
                                     'No reload config function found - cannot refresh SABR streaming URL.'
                                     ' The url will expire soon and the download will fail.')
-
                             try:
                                 stream.server_abr_streaming_url, stream.video_playback_ustreamer_config = format_group['reload_config_fn']()
                             except (TransportError, HTTPError) as e:
                                 self.report_warning(f'Failed to refresh SABR streaming URL: {e}')
 
+                        elif isinstance(part, MediaSeekSabrPart):
+                            # xxx: on the fence whether this should be in SabrStream or up to the caller
+                            if (
+                                not info_dict.get('is_live')
+                                and MediaSeekSabrPart.reason == MediaSeekSabrPart.Reason.SERVER_SEEK
+                            ):
+                                raise DownloadError('Server tried to seek a video')
                         else:
-                            self.to_screen(f'Unknown part type: {part}')
+                            self.to_screen(f'Unhandled part type: {part}')
 
                 except KeyboardInterrupt:
                     if not info_dict.get('is_live'):
