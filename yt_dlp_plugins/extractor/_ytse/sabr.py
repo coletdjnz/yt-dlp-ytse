@@ -101,6 +101,16 @@ class PoTokenStatusSabrPart(SabrPart):
 
 
 @dataclasses.dataclass
+class RefreshPlayerResponseSabrPart(SabrPart):
+
+    class Reason(enum.Enum):
+        UNKNOWN = enum.auto()
+        SABR_URL_EXPIRY = enum.auto()
+
+    reason: Reason
+
+
+@dataclasses.dataclass
 class Segment:
     format_id: FormatId
     is_init_segment: bool = False
@@ -161,7 +171,6 @@ class SabrStream:
         audio_selection: AudioSelector = None,
         video_selection: VideoSelector = None,
         live_segment_target_duration_sec: int = None,
-        reload_config_fn: typing.Callable[[], tuple[str, str]] = None,
         start_time_ms: int = 0,
         debug=False,
         po_token: str = None,
@@ -176,7 +185,6 @@ class SabrStream:
         self.server_abr_streaming_url = server_abr_streaming_url
         self.video_playback_ustreamer_config = video_playback_ustreamer_config
         self.po_token = po_token
-        self.reload_config_fn = reload_config_fn
         self.client_info = client_info
         self.live_segment_target_duration_sec = live_segment_target_duration_sec or 5
         self.start_time_ms = start_time_ms
@@ -251,7 +259,7 @@ class SabrStream:
             raise SabrStreamConsumedError('SABR stream has already been consumed')
 
         while not self._consumed:
-            self.process_expiry()
+            yield from self.process_expiry()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self._client_abr_state,
                 selected_video_format_ids=self._selected_video_format_ids,
@@ -291,7 +299,7 @@ class SabrStream:
                         )
                         self._request_number += 1
                         # Handle read errors too
-                        yield from filter(None, self.parse_ump_response(response))
+                        yield from self.parse_ump_response(response)
                     except TransportError as e:
                         self._logger.warning(f'Transport Error: {e}')
                         retry.error = e
@@ -481,11 +489,11 @@ class SabrStream:
             if part.part_type == UMPPartType.MEDIA_HEADER:
                 self.process_media_header(part)
             elif part.part_type == UMPPartType.MEDIA:
-                yield self.process_media(part)
+                yield from self.process_media(part)
             elif part.part_type == UMPPartType.MEDIA_END:
                 self.process_media_end(part)
             elif part.part_type == UMPPartType.STREAM_PROTECTION_STATUS:
-                yield self.process_stream_protection_status(part)
+                yield from self.process_stream_protection_status(part)
             elif part.part_type == UMPPartType.SABR_REDIRECT:
                 self.process_sabr_redirect(part)
             elif part.part_type == UMPPartType.FORMAT_INITIALIZATION_METADATA:
@@ -633,7 +641,7 @@ class SabrStream:
         if initialized_format.format_selector.discard_media:
             return
 
-        return MediaSabrPart(
+        yield MediaSabrPart(
             format_selector=initialized_format.format_selector,
             format_id=segment.format_id,
             player_time_ms=self._client_abr_state.player_time_ms,
@@ -661,15 +669,17 @@ class SabrStream:
         if sps.status == StreamProtectionStatus.Status.OK:
             self._sps_retry_count = 0
             if self.po_token:
-                return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.OK)
-            return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.NOT_REQUIRED)
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.OK)
+            else:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.NOT_REQUIRED)
         elif sps.status == StreamProtectionStatus.Status.ATTESTATION_PENDING:
             if sps.max_retries is not None:
                 # Should not happen
                 self._logger.warning(f'StreamProtectionStatus: Attestation Pending has a retry count of {sps.max_retries}{bug_reports_message()}')
             if self.po_token:
-                return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING)
-            return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING_MISSING)
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING)
+            else:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING_MISSING)
         elif sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
             if self._sps_retry_count >= (sps.max_retries or self._default_max_sps_retries):
                 raise SabrStreamError(f'StreamProtectionStatus: Attestation Required ({"Invalid" if self.po_token else "Missing"} PO Token)')
@@ -679,9 +689,9 @@ class SabrStream:
             self._is_retry = True
 
             if self.po_token:
-                return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.INVALID)
-            return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.MISSING)
-        return None
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.INVALID)
+            else:
+                yield PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.MISSING)
 
     def process_sabr_redirect(self, part: UMPPart):
         sabr_redirect = protobug.loads(part.data, SabrRedirect)
@@ -787,17 +797,8 @@ class SabrStream:
             self.write_sabr_debug(f'SABR streaming url expires in {int(expires_at - time.time())} seconds')
             return
 
-        self.write_sabr_debug('Refreshing SABR streaming URL')
-
-        if not self.reload_config_fn:
-            raise self._logger.warning(
-                'No reload config function found - cannot refresh SABR streaming URL.'
-                ' The url will expire in 5 minutes and the download will fail.')
-
-        try:
-            self.server_abr_streaming_url, self.video_playback_ustreamer_config = self.reload_config_fn()
-        except (TransportError, HTTPError) as e:
-            raise SabrStreamError(f'Failed to refresh SABR streaming URL: {e}') from e
+        self.write_sabr_debug('Requesting player response refresh as SABR streaming URL is due to expire in 300 seconds')
+        yield RefreshPlayerResponseSabrPart(reason=RefreshPlayerResponseSabrPart.Reason.SABR_URL_EXPIRY)
 
 
 def get_br_chain(start_buffered_range: BufferedRange, buffered_ranges: List[BufferedRange]) -> List[BufferedRange]:

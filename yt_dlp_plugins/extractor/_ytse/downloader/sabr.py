@@ -2,6 +2,7 @@ import collections
 import dataclasses
 import itertools
 from yt_dlp.downloader import FileDownloader
+from yt_dlp.networking.exceptions import TransportError, HTTPError
 
 try:
     from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
@@ -16,7 +17,8 @@ from ..protos import (
     FormatId,
     ClientInfo
 )
-from ..sabr import SabrStream, AudioSelector, VideoSelector, MediaSabrPart, PoTokenStatusSabrPart
+from ..sabr import SabrStream, AudioSelector, VideoSelector, MediaSabrPart, PoTokenStatusSabrPart, \
+    RefreshPlayerResponseSabrPart
 
 
 @dataclasses.dataclass
@@ -186,7 +188,6 @@ class SABRFD(FileDownloader):
                     audio_selection=audio_format_request,
                     start_time_ms=format_group['start_time_ms'],
                     client_info=format_group['client_info'],
-                    reload_config_fn=format_group['reload_config_fn'],
                     live_segment_target_duration_sec=format_group.get('target_duration_sec'),  # todo: should this be with the format request?
                 )
                 self._prepare_multiline_status(int(bool(audio_format and video_format)) + 1)
@@ -211,6 +212,19 @@ class SABRFD(FileDownloader):
                                 ))
                             else:
                                 print(f'Unknown format selector: {part.format_selector}')
+
+                        elif isinstance(part, RefreshPlayerResponseSabrPart):
+                            # In-place refresh - not ideal but should work in most cases
+
+                            if not format_group['reload_config_fn']:
+                                raise self.report_warning(
+                                    'No reload config function found - cannot refresh SABR streaming URL.'
+                                    ' The url will expire soon and the download will fail.')
+
+                            try:
+                                stream.server_abr_streaming_url, stream.video_playback_ustreamer_config = format_group['reload_config_fn']()
+                            except (TransportError, HTTPError) as e:
+                                self.report_warning(f'Failed to refresh SABR streaming URL: {e}')
 
                         else:
                             print(f'Unknown part type: {part}')
