@@ -16,7 +16,7 @@ from ..protos import (
     FormatId,
     ClientInfo
 )
-from ..sabr import SABRStream, AudioSelector, VideoSelector, MediaSabrPart, PoTokenStatusSabrPart
+from ..sabr import SabrStream, AudioSelector, VideoSelector, MediaSabrPart, PoTokenStatusSabrPart
 
 
 @dataclasses.dataclass
@@ -175,7 +175,7 @@ class SABRFD(FileDownloader):
                 audio_format_request = AudioSelector(
                         format_ids=[audio_format['format_id']],
                     ) if audio_format else None
-                stream = SABRStream(
+                stream = SabrStream(
                     urlopen=self.ydl.urlopen,
                     logger=_YDLLogger(self.ydl),
                     debug=bool(traverse_obj(self.ydl.params, ('extractor_args', 'youtube', 'sabr_debug', 0, {int_or_none}), get_all=False)),

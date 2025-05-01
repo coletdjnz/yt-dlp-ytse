@@ -9,11 +9,11 @@ from typing import List
 from urllib.parse import urlparse
 
 import protobug
-from yt_dlp import DownloadError, int_or_none, traverse_obj
+from yt_dlp import int_or_none, traverse_obj
 from yt_dlp.networking import Request, Response
 from yt_dlp.networking.exceptions import HTTPError, TransportError
 from yt_dlp.utils import parse_qs, update_url_query
-from yt_dlp.utils._utils import _YDLLogger, RetryManager, bug_reports_message
+from yt_dlp.utils._utils import _YDLLogger, RetryManager, bug_reports_message, YoutubeDLError
 
 from .protos import (
     ClientInfo,
@@ -62,8 +62,13 @@ class VideoSelector(FormatSelector):
         )
 
 
-class SabrStreamConsumedError(DownloadError):
+class SabrStreamConsumedError(YoutubeDLError):
     pass
+
+
+class SabrStreamError(YoutubeDLError):
+    pass
+
 
 @dataclasses.dataclass
 class SabrPart:
@@ -122,11 +127,7 @@ class InitializedFormat:
     total_sequences: int = None
 
 
-def get_format_key(format_id: FormatId):
-    return f'{format_id.itag}-{format_id.lmt}-{format_id.xtags}'
-
-
-class SABRStream:
+class SabrStream:
 
     """
 
@@ -140,6 +141,14 @@ class SABRStream:
     Buffer tracking:
     SabrStream keeps track of what segments it has seen and tells the server to not send them again.
     This includes after a seek (e.g. SABR_SEEK).
+
+    TODO:
+    - Handling for live_metadata not being present
+    - Improved logging for debugging (unexpected errors / warnings should contain enough context to debug them)
+    - Unit testing various scenarios, particularly the edge cases
+    - Increment player_time_ms if we received segments in the request (inc skipped as already seen)
+    - Yield a SabrPart on SABR_SEEK (and maybe other seeks too?)
+    - Player response refresh should be handled by the caller. We just yield a SabrPart.
     """
 
     def __init__(
@@ -181,7 +190,7 @@ class SABRStream:
         self._video_format_selector = video_selection
 
         if not self._audio_format_selector and not self._video_format_selector:
-            raise DownloadError('No audio or video requested')
+            raise SabrStreamError('No audio or video requested')
 
         # State management
         self._requests_no_data = 0
@@ -216,12 +225,15 @@ class SABRStream:
 
     def _initialize_cabr_state(self):
         # note: video only is not supported
-        enabled_track_types_bitfield = 0  # Both
+        enabled_track_types_bitfield = 0  # Audio+Video
         if not self._video_format_selector:
             enabled_track_types_bitfield = 1  # Audio only
             # Guard against audio-only returning video formats
             self._video_format_selector = VideoSelector(discard_media=True)
 
+        # SABR does not support video-only, so we need to discard the audio track received.
+        # We need a selector as the server sometimes does not like it
+        # if we haven't initialized an audio format (e.g. livestreams).
         if not self._audio_format_selector:
             self._audio_format_selector = AudioSelector(discard_media=True)
 
@@ -234,7 +246,7 @@ class SABRStream:
             enabled_track_types_bitfield=enabled_track_types_bitfield,
         )
 
-    def iter_parts(self, max_requests=-1):
+    def iter_parts(self):
         if self._consumed:
             raise SabrStreamConsumedError('SABR stream has already been consumed')
 
@@ -295,7 +307,7 @@ class SABRStream:
                 if 500 <= e.status < 600:
                     self.process_gvs_fallback()
                 else:
-                    raise DownloadError(f'HTTP Error: {e.status} - {e.reason}')
+                    raise SabrStreamError(f'HTTP Error: {e.status} - {e.reason}')
 
             except TransportError as e:
                 self._logger.warning(f'Transport Error: {e}')
@@ -397,7 +409,6 @@ class SABRStream:
 
             # Check if we have exceeded the total duration of the media (if not live),
             #  or wait for the next segment (if live)
-            # TODO: should consider live stream timestamp in LIVE_METADATA perhaps?
             elif self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
                 if self._live_metadata:
                     self._client_abr_state.player_time_ms = self._total_duration_ms
@@ -405,6 +416,7 @@ class SABRStream:
                     if (
                         self._requests_no_data > 3
                         and self._timestamp_no_data
+                        and not self._redirected
                         and self._timestamp_no_data < time.time() + self.live_end_wait_sec
                     ):
                         self._logger.debug(f'No fragments received for at least {self.live_end_wait_sec} seconds, assuming end of live stream')
@@ -416,20 +428,21 @@ class SABRStream:
                     self._consumed = True
 
             # Guard against receiving no data before end of video/stream
+            # TODO: add a fallback here for livestreams, if we can't get the total_duration_ms or live_metadata doesn't exist
             if (
                 (not self._total_duration_ms or (self._client_abr_state.player_time_ms < self._total_duration_ms))
                 and request_player_time == self._client_abr_state.player_time_ms
                 and not self._consumed
+                and not self._redirected
                 and self._requests_no_data > 3
             ):
-                raise DownloadError('No data found in three consecutive requests')
+                raise SabrStreamError('No data found in three consecutive requests')
 
         self._next_request_policy = None
         self._redirected = False
         self._is_retry = False
         self._request_had_data = False
 
-        # TODO: clear buffered ranges that are not behind or in front of current player time ms
         if not self._consumed:
             self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
 
@@ -493,9 +506,9 @@ class SABRStream:
         media_header = protobug.loads(part.data, MediaHeader)
         self.write_sabr_debug(part=part, protobug_obj=media_header, data=part.data)
         if not media_header.format_id:
-            raise DownloadError(f'Format ID not found in MediaHeader (media_header={media_header})')
+            raise SabrStreamError(f'Format ID not found in MediaHeader (media_header={media_header})')
 
-        initialized_format = self._initialized_formats.get(get_format_key(media_header.format_id))
+        initialized_format = self._initialized_formats.get(str(media_header.format_id))
         if not initialized_format:
             self.write_sabr_debug(f'Initialized format not found for {media_header.format_id}', part=part)
             return
@@ -503,17 +516,19 @@ class SABRStream:
         sequence_number, is_init_segment = media_header.sequence_number, media_header.is_init_segment
 
         if sequence_number is None and not media_header.is_init_segment:
-            raise DownloadError(f'Sequence number not found in MediaHeader (media_header={media_header})')
+            raise SabrStreamError(f'Sequence number not found in MediaHeader (media_header={media_header})')
 
         # Guard: Check if sequence number is within any existing buffered range
         # The server should not send us any segments that are already buffered
+        # However, if retrying a request, we may get the same segment again
         if not is_init_segment and any(
             (
                 br.start_segment_index <= sequence_number <= br.end_segment_index
                 for br in initialized_format.buffered_ranges
             )
         ):
-            raise DownloadError(f'Segment {sequence_number} already exists in buffered ranges')
+            self.write_sabr_debug(f'Segment {sequence_number} already buffered, skipping', part=part)
+            return
 
         # Note: previous segment should never be an init segment
         previous_segment = initialized_format.current_segment
@@ -524,8 +539,7 @@ class SABRStream:
 
             if sequence_number != previous_segment.sequence_number + 1:
                 # Bail out as the segment is not in order when it should be
-                # TODO: logging should include plenty of info, including previous segment, whether we sabr seeked, etc.
-                raise DownloadError(f'Segment sequence number mismatch: {previous_segment.sequence_number + 1} != {sequence_number}')
+                raise SabrStreamError(f'Segment sequence number mismatch: {previous_segment.sequence_number + 1} != {sequence_number}')
 
         time_range = media_header.time_range
         start_ms = media_header.start_ms or (time_range and time_range.get_start_ms()) or 0
@@ -589,13 +603,13 @@ class SABRStream:
             # We need to increment both duration_ms and time_range.duration
             buffered_range.duration_ms += duration_ms
             if buffered_range.time_range.timescale != 1000:
-                raise DownloadError(f'Buffered range timescale bad: {buffered_range.time_range.timescale} != 1000')
+                raise SabrStreamError(f'Buffered range timescale bad: {buffered_range.time_range.timescale} != 1000')
             buffered_range.time_range.duration += duration_ms
         else:
             # Attempt to keep in sync with livestream, as the segment duration target is not always perfect.
             # The server seems to care more about the segment index than the duration.
             if buffered_range.start_time_ms > start_ms:
-                raise DownloadError(f'Buffered range start time mismatch: {buffered_range.start_time_ms} > {start_ms}')
+                raise SabrStreamError(f'Buffered range start time mismatch: {buffered_range.start_time_ms} > {start_ms}')
 
             new_duration = (start_ms - buffered_range.start_time_ms) + estimated_duration_ms
             buffered_range.duration_ms = buffered_range.time_range.duration = new_duration
@@ -658,7 +672,7 @@ class SABRStream:
             return PoTokenStatusSabrPart(status=PoTokenStatusSabrPart.PoTokenStatus.PENDING_MISSING)
         elif sps.status == StreamProtectionStatus.Status.ATTESTATION_REQUIRED:
             if self._sps_retry_count >= (sps.max_retries or self._default_max_sps_retries):
-                raise DownloadError(f'StreamProtectionStatus: Attestation Required ({"Invalid" if self.po_token else "Missing"} PO Token)')
+                raise SabrStreamError(f'StreamProtectionStatus: Attestation Required ({"Invalid" if self.po_token else "Missing"} PO Token)')
 
             # xxx: temporal network error retries, host changes due to errors will count towards the SPS retry
             self._sps_retry_count += 1
@@ -697,7 +711,7 @@ class SABRStream:
                     return
 
         self._logger.debug(f'GVS fallback failed - no working hosts available. Bad hosts: {self._bad_hosts}')
-        raise DownloadError('Unable to find a working Google Video Server. Is your connection okay?')
+        raise SabrStreamError('Unable to find a working Google Video Server. Is your connection okay?')
 
     def _match_format_selector(self, format_init_metadata: FormatInitializationMetadata):
         for format_selector in (self._video_format_selector, self._audio_format_selector):
@@ -711,15 +725,14 @@ class SABRStream:
         fmt_init_metadata = protobug.loads(part.data, FormatInitializationMetadata)
         self.write_sabr_debug(part=part, protobug_obj=fmt_init_metadata, data=part.data)
 
-        initialized_format_key = get_format_key(fmt_init_metadata.format_id)
-        if initialized_format_key in self._initialized_formats:
+        if str(fmt_init_metadata.format_id) in self._initialized_formats:
             self.write_sabr_debug('Format already initialized', part)
             return
 
         format_selector = self._match_format_selector(fmt_init_metadata)
 
         if not format_selector:
-            self._logger.warning(f'Format {initialized_format_key} not in requested formats.. Ignoring')
+            self._logger.warning(f'Format {fmt_init_metadata.format_id} not in requested formats.. Ignoring')
             return
 
         duration_ms = (
@@ -737,7 +750,7 @@ class SABRStream:
             total_sequences=fmt_init_metadata.total_segments,
         )
         self._total_duration_ms = max(self._total_duration_ms or 0, fmt_init_metadata.end_time_ms or 0, duration_ms or 0)
-        self._initialized_formats[get_format_key(fmt_init_metadata.format_id)] = initialized_format
+        self._initialized_formats[str(fmt_init_metadata.format_id)] = initialized_format
 
         self.write_sabr_debug(f'Initialized Format: {initialized_format}', part=part)
 
@@ -747,6 +760,7 @@ class SABRStream:
 
     def process_sabr_seek(self, part: UMPPart):
         # TODO: disallow sabr seek for normal videos?
+        #  or should we yield a SabrPart and let the caller handle it?
         sabr_seek = protobug.loads(part.data, SabrSeek)
         seek_to = math.ceil((sabr_seek.seek_time / sabr_seek.timescale) * 1000)
         self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
@@ -760,7 +774,7 @@ class SABRStream:
     def process_sabr_error(self, part: UMPPart):
         sabr_error = protobug.loads(part.data, SabrError)
         self.write_sabr_debug(part=part, protobug_obj=sabr_error, data=part.data)
-        raise DownloadError(f'SABR Returned Error: {sabr_error}')
+        raise SabrStreamError(f'SABR Returned Error: {sabr_error}')
 
     def process_expiry(self):
         expires_at = int_or_none(traverse_obj(parse_qs(self.server_abr_streaming_url), ('expire', 0), get_all=False))
@@ -783,7 +797,7 @@ class SABRStream:
         try:
             self.server_abr_streaming_url, self.video_playback_ustreamer_config = self.reload_config_fn()
         except (TransportError, HTTPError) as e:
-            raise DownloadError(f'Failed to refresh SABR streaming URL: {e}') from e
+            raise SabrStreamError(f'Failed to refresh SABR streaming URL: {e}') from e
 
 
 def get_br_chain(start_buffered_range: BufferedRange, buffered_ranges: List[BufferedRange]) -> List[BufferedRange]:
