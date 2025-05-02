@@ -134,6 +134,8 @@ class Segment:
     initialized_format: 'InitializedFormat' = None
     # Whether duration_ms is an estimate
     duration_estimated: bool = False
+    # Whether we should discard the segment data
+    discard: bool = False
 
 
 @dataclasses.dataclass
@@ -149,7 +151,10 @@ class InitializedFormat:
     init_segment: Segment | None = None
     buffered_ranges: List[BufferedRange] = dataclasses.field(default_factory=list)
     total_sequences: int = None
+    # Whether we should discard any data received for this format
+    discard: bool = False
 
+JS_MAX_SAFE_INTEGER = (2**53) - 1
 
 class SabrStream:
 
@@ -371,6 +376,17 @@ class SabrStream:
             for izf in self._initialized_formats.values():
                 if not izf.current_segment:
                     continue
+
+                # Guard: Check that the segment is not in multiple buffered ranges
+                # This should not happen, but if it does, we should bail
+                count = sum(
+                    1 for br in izf.buffered_ranges
+                    if br.start_segment_index <= izf.current_segment.sequence_number <= br.end_segment_index
+                )
+
+                if count > 1:
+                    raise SabrStreamError(f'Segment {izf.current_segment.sequence_number} in multiple buffered ranges: {count}')
+
                 # Check if there is two buffered ranges where the end lines up with the start of the other.
                 # This could happen in the case of where we seeked backwards (for whatever reason, e.g. livestream)
                 # In this case, we should consider a seek as acceptable to the end of the other.
@@ -431,10 +447,13 @@ class SabrStream:
                 and len(latest_buffered_ranges) == len(self._initialized_formats)
                 and all(
                     (
-                        initialized_format.buffered_ranges
-                        and initialized_format.buffered_ranges[-1].end_segment_index is not None
-                        and initialized_format.total_sequences is not None
-                        and initialized_format.buffered_ranges[-1].end_segment_index == initialized_format.total_sequences
+                        initialized_format.discard or
+                        (
+                            initialized_format.buffered_ranges
+                            and initialized_format.buffered_ranges[-1].end_segment_index is not None
+                            and initialized_format.total_sequences is not None
+                            and initialized_format.buffered_ranges[-1].end_segment_index >= initialized_format.total_sequences
+                        )
                     )
                     for initialized_format in self._initialized_formats.values()
                 )
@@ -549,10 +568,10 @@ class SabrStream:
             return
 
         sequence_number, is_init_segment = media_header.sequence_number, media_header.is_init_segment
-
         if sequence_number is None and not media_header.is_init_segment:
             raise SabrStreamError(f'Sequence number not found in MediaHeader (media_header={media_header})')
 
+        discard = initialized_format.discard
         # Guard: Check if sequence number is within any existing buffered range
         # The server should not send us any segments that are already buffered
         # However, if retrying a request, we may get the same segment again
@@ -562,23 +581,25 @@ class SabrStream:
                 for br in initialized_format.buffered_ranges
             )
         ):
-            self.write_sabr_debug(f'Segment {sequence_number} already buffered, skipping', part=part)
-            return
+            self.write_sabr_debug(f'Segment {sequence_number} already buffered, marking to discard', part=part)
+            discard = True
 
         # Note: previous segment should never be an init segment
+        # Note: we don't care if formats/segments to discard are out of order
+        #  (this can be expected if discarding audio - video format may be more ahead slightly)
         previous_segment = initialized_format.current_segment
-        if previous_segment and not is_init_segment:
+        if previous_segment and not is_init_segment and not discard:
             if sequence_number <= previous_segment.sequence_number:
-                self.write_sabr_debug(f'Segment {sequence_number} before or same as previous segment, skipping as probably already seen', part=part)
-                return
+                self.write_sabr_debug(f'Segment {sequence_number} before or same as previous segment, will discard as probably already seen', part=part)
+                discard = True
 
-            if sequence_number != previous_segment.sequence_number + 1:
-                # Bail out as the segment is not in order when it should be
+            elif sequence_number != previous_segment.sequence_number + 1:
+                # Bail out as the segment is not in order when it is expected to be
                 raise SabrStreamError(f'Segment sequence number mismatch: {previous_segment.sequence_number + 1} != {sequence_number}')
 
         if initialized_format.init_segment and is_init_segment:
-            self.write_sabr_debug(f'Init segment {sequence_number} already seen, skipping', part=part)
-            return
+            self.write_sabr_debug(f'Init segment {sequence_number} already seen, marking as discard', part=part)
+            discard = True
 
         time_range = media_header.time_range
         start_ms = media_header.start_ms or (time_range and time_range.get_start_ms()) or 0
@@ -607,12 +628,13 @@ class SabrStream:
             content_length=media_header.content_length,
             start_ms=start_ms,
             initialized_format=initialized_format,
-            duration_estimated=not actual_duration_ms
+            duration_estimated=not actual_duration_ms,
+            discard=discard
         )
 
         self._header_ids[media_header.header_id] = segment
 
-        self.write_sabr_debug(f'Initialized Media Header {media_header.header_id} for sequence {sequence_number} (init_segment={is_init_segment})', part=part)
+        self.write_sabr_debug(f'Initialized Media Header {media_header.header_id} for sequence {sequence_number} (init_segment={is_init_segment}, discard={discard})', part=part)
 
     def process_media(self, part: UMPPart):
         header_id = part.data[0]
@@ -621,10 +643,11 @@ class SabrStream:
             self.write_sabr_debug(f'Header ID {header_id} not found', part=part)
             return
 
-        # Will count discard (ignored) media as a request with data... as something is at least coming through
+        # Will count discarded (ignored) media as a request with data... as something is at least coming through
         self._request_had_data = True
 
-        if segment.initialized_format.format_selector.discard_media:
+        if segment.discard:
+            self.write_sabr_debug(f'Discarding media for {segment.initialized_format.format_id}', part=part)
             return
 
         yield MediaSabrPart(
@@ -644,7 +667,7 @@ class SabrStream:
         segment: Segment = self._header_ids.pop(header_id, None)
 
         if not segment:
-            self._logger.warning(f'Received a MediaEnd for an unknown or already finished header ID {header_id}')
+            self.write_sabr_debug(f'Received a MediaEnd for an unknown or already finished header ID {header_id}', part=part)
             return
 
         self.write_sabr_debug(f'MediaEnd for {segment.format_id} (sequence {segment.sequence_number})', part=part)
@@ -661,6 +684,17 @@ class SabrStream:
             (br for br in segment.initialized_format.buffered_ranges if br.end_segment_index == segment.sequence_number - 1),
             None
         )
+
+        if not buffered_range and any(
+            br.start_segment_index <= segment.sequence_number <= br.end_segment_index
+            for br in segment.initialized_format.buffered_ranges
+        ):
+            # Segment is already buffered, do not create a new buffered range. It was probably discarded.
+            # This can be expected to happen in the case of video-only, where we discard the audio track (and mark it as entirely buffered)
+            # We still want to create/update buffered range for discarded media IF it is not already buffered
+            self.write_sabr_debug(f'Segment {segment.sequence_number} already buffered, not creating or updating buffered range (discard={segment.discard})', part=part)
+            return
+
 
         if not buffered_range:
             # Create a new buffered range
@@ -803,10 +837,28 @@ class SabrStream:
             video_id=fmt_init_metadata.video_id,
             format_selector=format_selector,
             total_sequences=fmt_init_metadata.total_segments,
+            discard=format_selector.discard_media,
         )
         self._total_duration_ms = max(self._total_duration_ms or 0, fmt_init_metadata.end_time_ms or 0, duration_ms or 0)
-        self._initialized_formats[str(fmt_init_metadata.format_id)] = initialized_format
 
+        if initialized_format.discard:
+            # Mark the entire format as buffered into oblivion if we plan to discard all media.
+            # This stops the server sending us any more data for this format.
+            # Note: Using JS_MAX_SAFE_INTEGER but could use any maximum value as long as the server accepts it.
+            initialized_format.buffered_ranges = [BufferedRange(
+                format_id=fmt_init_metadata.format_id,
+                start_time_ms=0,
+                duration_ms=JS_MAX_SAFE_INTEGER,
+                start_segment_index=0,
+                end_segment_index=JS_MAX_SAFE_INTEGER,
+                time_range=TimeRange(
+                    start=0,
+                    duration=JS_MAX_SAFE_INTEGER,
+                    timescale=1000
+                )
+            )]
+
+        self._initialized_formats[str(fmt_init_metadata.format_id)] = initialized_format
         self.write_sabr_debug(f'Initialized Format: {initialized_format}', part=part)
 
     def process_next_request_policy(self, part: UMPPart):
