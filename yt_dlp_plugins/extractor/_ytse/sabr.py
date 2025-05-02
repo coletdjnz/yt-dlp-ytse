@@ -632,7 +632,7 @@ class SabrStream:
             format_id=segment.format_id,
             player_time_ms=self._client_abr_state.player_time_ms,
             fragment_index=segment.sequence_number,
-            fragment_count=self._live_metadata and self._live_metadata.head_sequence_number,
+            fragment_count=segment.initialized_format.total_sequences,
             data=part.data[1:],
             is_init_segment=segment.is_init_segment
         )
@@ -701,6 +701,12 @@ class SabrStream:
         self.write_sabr_debug(part=part, protobug_obj=self._live_metadata, data=part.data)
         if self._live_metadata.head_sequence_time_ms:
             self._total_duration_ms = self._live_metadata.head_sequence_time_ms
+
+        # If we have a head sequence number, we need to update the total sequences for each initialized format
+        # For livestreams, it is not available in the format initialization metadata
+        if self._live_metadata.head_sequence_number:
+            for izf in self._initialized_formats.values():
+                izf.total_sequences = self._live_metadata.head_sequence_number
 
     def process_stream_protection_status(self, part: UMPPart):
         sps = protobug.loads(part.data, StreamProtectionStatus)
