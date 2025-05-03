@@ -194,7 +194,7 @@ class SabrStream:
         start_time_ms: int = 0,
         debug=False,
         po_token: str = None,
-        http_retries: int = 3,
+        http_retries: int = 10,
         live_end_wait_sec: int = 10,
     ):
 
@@ -282,7 +282,21 @@ class SabrStream:
         if self._consumed:
             raise SabrStreamConsumedError('SABR stream has already been consumed')
 
+        read_retrymanager = None
+
         while not self._consumed:
+            # If an error occurs on response read, retry with the same GVS server using this retry manager.
+            # Once retries have been exceeded, fall back to the next GVS server.
+            if read_retrymanager is None:
+                read_retrymanager = iter(RetryManager(self.http_retries, self._report_retry))
+
+            try:
+                res_retry = next(read_retrymanager)
+            except TransportError:
+                self.next_fallback_server()
+                read_retrymanager = None
+                continue
+
             yield from self.process_expiry()
             vpabr = VideoPlaybackAbrRequest(
                 client_abr_state=self._client_abr_state,
@@ -308,195 +322,206 @@ class SabrStream:
 
             response = self._request_sabr(payload)
 
-            # TODO: handle errors on read. However, need to be careful as the state has been partially changed
-            # But may not have retrieved all parts
-            # e.g. When we get a MediaHeader, we increase the buffered range then. Perhaps we should do it on the MediaEnd?
-            yield from self.parse_ump_response(response)
-            yield from self._prepare_next_request()
+            try:
+                yield from self.parse_ump_response(response)
+                # Reset the retry count, if any
+                read_retrymanager = None
+            except TransportError as e:
+                self._logger.warning(f'Transport Error during read: {e}')
+                res_retry.error = e
+                self._is_retry = True
+
+            # We are expecting to stay in the same place for a retry
+            if not self._is_retry:
+                # Calculate and apply the next playback time to skip to
+                yield from self._prepare_next_playback_time()
+
+            self._next_request_policy = None
+            self._redirected = False
+            self._is_retry = False
+            self._request_had_data = False
+            self._header_ids.clear()
 
         self._consumed = True
 
     def _request_sabr(self, payload):
         # Attempt to retry the request if there is an intermittent network issue.
         # Otherwise, it may be a server issue, so try to fall back to another host.
-        try:
-            for retry in RetryManager(self.http_retries, self._report_retry):
-                try:
-                    response = self._urlopen(
-                        Request(
-                            url=self.server_abr_streaming_url,
-                            method='POST',
-                            data=payload,
-                            query={'rn': self._request_number},
-                            headers={'content-type': 'application/x-protobuf'}
+        while True:
+            try:
+                for retry in RetryManager(self.http_retries, self._report_retry):
+                    try:
+                        response = self._urlopen(
+                            Request(
+                                url=self.server_abr_streaming_url,
+                                method='POST',
+                                data=payload,
+                                query={'rn': self._request_number},
+                                headers={'content-type': 'application/x-protobuf'}
+                            )
                         )
-                    )
-                    self._request_number += 1
-                    return response
-                except TransportError as e:
-                    self._logger.warning(f'Transport Error: {e}')
-                    retry.error = e
-                    continue
-            return None
-        except HTTPError as e:
-            self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
-            # on 5xx errors, if a retry does not work, try falling back to another host?
-            # todo: retry the request here?
-            if 500 <= e.status < 600:
-                self.process_gvs_fallback()
-                return None
-            else:
-                raise SabrStreamError(f'HTTP Error: {e.status} - {e.reason}')
+                        self._request_number += 1
+                        return response
+                    except TransportError as e:
+                        self._logger.warning(f'Transport Error: {e}')
+                        retry.error = e
+                        continue
+                    except HTTPError as e:
+                        # retry on 5xx errors only
+                        if 500 <= e.status < 600:
+                            self._logger.warning(f'HTTP Error: {e.status} - {e.reason}')
+                            retry.error = e
+                            continue
+                        raise
 
-        except TransportError as e:
-            self._logger.warning(f'Transport Error: {e}')
-            self.process_gvs_fallback()
-            return None
+            except HTTPError as e:
+                self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
+                # on 5xx errors, if a retry does not work, try falling back to another host?
+                if 500 <= e.status < 600:
+                    self.next_fallback_server()
+                else:
+                    raise SabrStreamError(f'HTTP Error: {e.status} - {e.reason}')
 
-    def _prepare_next_request(self):
+            except TransportError as e:
+                self._logger.warning(f'Transport Error: {e}')
+                self.next_fallback_server()
+
+    def _prepare_next_playback_time(self):
         if len(self._header_ids):
             self._logger.warning(f'Extraneous header IDs left: {list(self._header_ids.values())}')
-            self._header_ids.clear()
 
         wait_seconds = 0
 
-        # Do not update client abr state if we are retrying
-        # For the case we fail midway through a response after reading some media data, but didn't get all of it.
-        if not self._is_retry:
-            # Don't count retries e.g. SPS.
-            # As any retry logic should not be sending us in infinite requests
-            if not self._request_had_data:
-                self._requests_no_data += 1
-                if not self._timestamp_no_data:
-                    self._timestamp_no_data = time.time()
-            else:
-                self._requests_no_data = 0
-                self._timestamp_no_data = None
+        # Don't count retries e.g. SPS.
+        # As any retry logic should not be sending us in infinite requests
+        if not self._request_had_data:
+            self._requests_no_data += 1
+            if not self._timestamp_no_data:
+                self._timestamp_no_data = time.time()
+        else:
+            self._requests_no_data = 0
+            self._timestamp_no_data = None
 
 
-            for izf in self._initialized_formats.values():
-                if not izf.current_segment:
-                    continue
+        for izf in self._initialized_formats.values():
+            if not izf.current_segment:
+                continue
 
-                # Guard: Check that the segment is not in multiple buffered ranges
-                # This should not happen, but if it does, we should bail
-                count = sum(
-                    1 for br in izf.buffered_ranges
-                    if br.start_segment_index <= izf.current_segment.sequence_number <= br.end_segment_index
-                )
-
-                if count > 1:
-                    raise SabrStreamError(f'Segment {izf.current_segment.sequence_number} in multiple buffered ranges: {count}')
-
-                # Check if there is two buffered ranges where the end lines up with the start of the other.
-                # This could happen in the case of where we seeked backwards (for whatever reason, e.g. livestream)
-                # In this case, we should consider a seek as acceptable to the end of the other.
-                # Note: It is assumed a segment is only present in one buffered range - it should not be allowed in multiple (by process media header)
-                prev_buffered_range = next(
-                    (br for br in izf.buffered_ranges if br.end_segment_index == izf.current_segment.sequence_number),
-                    None
-                )
-                if prev_buffered_range and len(get_br_chain(prev_buffered_range, izf.buffered_ranges)) >= 2:
-                    self.write_sabr_debug(f'Found two buffered ranges that line up, allowing a seek for format {izf.format_id}')
-                    izf.current_segment = None
-                    yield MediaSeekSabrPart(
-                        reason=MediaSeekSabrPart.Reason.BUFFER_SEEK,
-                        format_id=izf.format_id,
-                        format_selector=izf.format_selector,
-                    )
-
-            # For each initialized format:
-            #   1. find the buffered format that matches player_time_ms.
-            #   2. find the last buffered range in sequence (in case multiple are joined together)
-            latest_buffered_ranges = []
-            for izf in self._initialized_formats.values():
-                for br in izf.buffered_ranges:
-                    if br.start_time_ms <= self._client_abr_state.player_time_ms <= br.start_time_ms + br.duration_ms:
-                        chain = get_br_chain(br, izf.buffered_ranges)
-                        latest_buffered_ranges.append(chain[-1])
-                        break # There should only be one chain for player_time_ms
-
-
-            # Then set the player_time_ms to the lowest buffered range end of the initialized formats
-            lowest_izf_buffered_range = min(latest_buffered_ranges, key=lambda br: br.start_time_ms + br.duration_ms)
-            min_buffered_duration_ms = lowest_izf_buffered_range.start_time_ms + lowest_izf_buffered_range.duration_ms
-
-            if len(latest_buffered_ranges) != len(self._initialized_formats):
-                # Missing a buffered range for a format - likely a format was seeked?
-                # In this case, consider player_time_ms to be our correct next time
-                # May? happen in the case of:
-                # 1. SABR_SEEK to Time outside both formats buffered ranges
-                # 2. ONE of the formats returns data after the SABR_SEEK in that request
-                min_buffered_duration_ms = min(min_buffered_duration_ms, self._client_abr_state.player_time_ms)
-
-            next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
-
-            # TODO: we should also consider incrementing player_time_ms if we already had all segments (i.e. check which segments we skipped and why)
-            #  Generally, next_request_policy backoff_time_ms will set this but we should also default it to not rely on it
-            request_player_time = self._client_abr_state.player_time_ms
-            self._client_abr_state.player_time_ms = max(
-                min_buffered_duration_ms,
-                # next request policy backoff_time_ms is the minimum to increment player_time_ms by
-                self._client_abr_state.player_time_ms + next_request_backoff_ms,
+            # Guard: Check that the segment is not in multiple buffered ranges
+            # This should not happen, but if it does, we should bail
+            count = sum(
+                1 for br in izf.buffered_ranges
+                if br.start_segment_index <= izf.current_segment.sequence_number <= br.end_segment_index
             )
 
-            # Check if the latest segment is the last one of each format (if data is available)
-            # TODO: fallback livestream handling when we don't have live_metadata
-            if (
-                not self._live_metadata
-                and self._initialized_formats
-                and len(latest_buffered_ranges) == len(self._initialized_formats)
-                and all(
-                    (
-                        initialized_format.discard or
-                        (
-                            initialized_format.buffered_ranges
-                            and initialized_format.buffered_ranges[-1].end_segment_index is not None
-                            and initialized_format.total_sequences is not None
-                            and initialized_format.buffered_ranges[-1].end_segment_index >= initialized_format.total_sequences
-                        )
-                    )
-                    for initialized_format in self._initialized_formats.values()
+            if count > 1:
+                raise SabrStreamError(f'Segment {izf.current_segment.sequence_number} in multiple buffered ranges: {count}')
+
+            # Check if there is two buffered ranges where the end lines up with the start of the other.
+            # This could happen in the case of where we seeked backwards (for whatever reason, e.g. livestream)
+            # In this case, we should consider a seek as acceptable to the end of the other.
+            # Note: It is assumed a segment is only present in one buffered range - it should not be allowed in multiple (by process media header)
+            prev_buffered_range = next(
+                (br for br in izf.buffered_ranges if br.end_segment_index == izf.current_segment.sequence_number),
+                None
+            )
+            if prev_buffered_range and len(get_br_chain(prev_buffered_range, izf.buffered_ranges)) >= 2:
+                self.write_sabr_debug(f'Found two buffered ranges that line up, allowing a seek for format {izf.format_id}')
+                izf.current_segment = None
+                yield MediaSeekSabrPart(
+                    reason=MediaSeekSabrPart.Reason.BUFFER_SEEK,
+                    format_id=izf.format_id,
+                    format_selector=izf.format_selector,
                 )
-            ):
-                self.write_sabr_debug(f'Reached last segment for all formats, assuming end of media')
+
+        # For each initialized format:
+        #   1. find the buffered format that matches player_time_ms.
+        #   2. find the last buffered range in sequence (in case multiple are joined together)
+        latest_buffered_ranges = []
+        for izf in self._initialized_formats.values():
+            for br in izf.buffered_ranges:
+                if br.start_time_ms <= self._client_abr_state.player_time_ms <= br.start_time_ms + br.duration_ms:
+                    chain = get_br_chain(br, izf.buffered_ranges)
+                    latest_buffered_ranges.append(chain[-1])
+                    break # There should only be one chain for player_time_ms
+
+
+        # Then set the player_time_ms to the lowest buffered range end of the initialized formats
+        lowest_izf_buffered_range = min(latest_buffered_ranges, key=lambda br: br.start_time_ms + br.duration_ms)
+        min_buffered_duration_ms = lowest_izf_buffered_range.start_time_ms + lowest_izf_buffered_range.duration_ms
+
+        if len(latest_buffered_ranges) != len(self._initialized_formats):
+            # Missing a buffered range for a format - likely a format was seeked?
+            # In this case, consider player_time_ms to be our correct next time
+            # May? happen in the case of:
+            # 1. SABR_SEEK to Time outside both formats buffered ranges
+            # 2. ONE of the formats returns data after the SABR_SEEK in that request
+            min_buffered_duration_ms = min(min_buffered_duration_ms, self._client_abr_state.player_time_ms)
+
+        next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
+
+        # TODO: we should also consider incrementing player_time_ms if we already had all segments (i.e. check which segments we skipped and why)
+        #  Generally, next_request_policy backoff_time_ms will set this but we should also default it to not rely on it
+        request_player_time = self._client_abr_state.player_time_ms
+        self._client_abr_state.player_time_ms = max(
+            min_buffered_duration_ms,
+            # next request policy backoff_time_ms is the minimum to increment player_time_ms by
+            self._client_abr_state.player_time_ms + next_request_backoff_ms,
+        )
+
+        # Check if the latest segment is the last one of each format (if data is available)
+        # TODO: fallback livestream handling when we don't have live_metadata
+        if (
+            not self._live_metadata
+            and self._initialized_formats
+            and len(latest_buffered_ranges) == len(self._initialized_formats)
+            and all(
+                (
+                    initialized_format.discard or
+                    (
+                        initialized_format.buffered_ranges
+                        and initialized_format.buffered_ranges[-1].end_segment_index is not None
+                        and initialized_format.total_sequences is not None
+                        and initialized_format.buffered_ranges[-1].end_segment_index >= initialized_format.total_sequences
+                    )
+                )
+                for initialized_format in self._initialized_formats.values()
+            )
+        ):
+            self.write_sabr_debug(f'Reached last segment for all formats, assuming end of media')
+            self._consumed = True
+
+        # Check if we have exceeded the total duration of the media (if not live),
+        #  or wait for the next segment (if live)
+        elif self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
+            if self._live_metadata:
+                self._client_abr_state.player_time_ms = self._total_duration_ms
+                # TODO: we need this for live streams in the case there is no live_metadata
+                if (
+                    self._requests_no_data > 3
+                    and self._timestamp_no_data
+                    and not self._redirected
+                    and self._timestamp_no_data < time.time() + self.live_end_wait_sec
+                ):
+                    self._logger.debug(f'No fragments received for at least {self.live_end_wait_sec} seconds, assuming end of live stream')
+                    self._consumed = True
+                else:
+                    wait_seconds = (next_request_backoff_ms // 1000) + self.live_segment_target_duration_sec
+            else:
+                self.write_sabr_debug(f'End of media (player time ms {self._client_abr_state.player_time_ms} >= total duration ms {self._total_duration_ms})')
                 self._consumed = True
 
-            # Check if we have exceeded the total duration of the media (if not live),
-            #  or wait for the next segment (if live)
-            elif self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
-                if self._live_metadata:
-                    self._client_abr_state.player_time_ms = self._total_duration_ms
-                    # TODO: we need this for live streams in the case there is no live_metadata
-                    if (
-                        self._requests_no_data > 3
-                        and self._timestamp_no_data
-                        and not self._redirected
-                        and self._timestamp_no_data < time.time() + self.live_end_wait_sec
-                    ):
-                        self._logger.debug(f'No fragments received for at least {self.live_end_wait_sec} seconds, assuming end of live stream')
-                        self._consumed = True
-                    else:
-                        wait_seconds = (next_request_backoff_ms // 1000) + self.live_segment_target_duration_sec
-                else:
-                    self.write_sabr_debug(f'End of media (player time ms {self._client_abr_state.player_time_ms} >= total duration ms {self._total_duration_ms})')
-                    self._consumed = True
+        # Guard against receiving no data before end of video/stream
+        # TODO: add a fallback here for livestreams, if we can't get the total_duration_ms or live_metadata doesn't exist
+        if (
+            (not self._total_duration_ms or (self._client_abr_state.player_time_ms < self._total_duration_ms))
+            and request_player_time == self._client_abr_state.player_time_ms
+            and not self._consumed
+            and not self._redirected
+            and self._requests_no_data > 3
+        ):
+            raise SabrStreamError('No data found in three consecutive requests')
 
-            # Guard against receiving no data before end of video/stream
-            # TODO: add a fallback here for livestreams, if we can't get the total_duration_ms or live_metadata doesn't exist
-            if (
-                (not self._total_duration_ms or (self._client_abr_state.player_time_ms < self._total_duration_ms))
-                and request_player_time == self._client_abr_state.player_time_ms
-                and not self._consumed
-                and not self._redirected
-                and self._requests_no_data > 3
-            ):
-                raise SabrStreamError('No data found in three consecutive requests')
-
-        self._next_request_policy = None
-        self._redirected = False
-        self._is_retry = False
-        self._request_had_data = False
 
         if not self._consumed:
             self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
@@ -508,8 +533,8 @@ class SabrStream:
     def _report_retry(self, err, count, retries, fatal=True):
         RetryManager.report_retry(
             err, count, retries, info=self._logger.info,
-            warn=lambda msg: self._logger.warning(f'[download] Got error: {msg}'),
-            error=None if fatal else lambda msg: self._logger.warning(f'[download] Got error: {msg}'),
+            warn=lambda msg: self._logger.warning(f'[sabr] Got error: {msg}'),
+            error=None if fatal else lambda msg: self._logger.warning(f'[sabr] Got error: {msg}'),
             sleep_func=0  # todo: use sleep func configuration
         )
 
@@ -802,7 +827,7 @@ class SabrStream:
         self.server_abr_streaming_url = sabr_redirect.redirect_url
         self._redirected = True
 
-    def process_gvs_fallback(self):
+    def next_fallback_server(self):
         # Attempt to fall back to another GVS host in the case the current one fails
         qs = parse_qs(self.server_abr_streaming_url)
         parsed_url = urlparse(self.server_abr_streaming_url)
