@@ -177,7 +177,6 @@ class SabrStream:
     - Improved logging for debugging (unexpected errors / warnings should contain enough context to debug them)
     - Unit testing various scenarios, particularly the edge cases
     - Increment player_time_ms if we received segments in the request (inc skipped as already seen)
-    - Yield a SabrPart on SABR_SEEK (and maybe other seeks too?)
     - Decouple logger from YDL
     """
 
@@ -341,6 +340,7 @@ class SabrStream:
         except HTTPError as e:
             self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
             # on 5xx errors, if a retry does not work, try falling back to another host?
+            # todo: retry the request here?
             if 500 <= e.status < 600:
                 self.process_gvs_fallback()
                 return None
@@ -819,10 +819,19 @@ class SabrStream:
             return
 
         format_selector = self._match_format_selector(fmt_init_metadata)
-
         if not format_selector:
-            self._logger.warning(f'Format {fmt_init_metadata.format_id} not in requested formats.. Ignoring')
-            return
+            # Should not happen. If we ignored the format the server may refuse to send us any more data
+            raise SabrStreamError(f'Received format {fmt_init_metadata.format_id} but it does not match any format selector')
+
+        # Guard: Check if the format selector is already in use by another initialized format.
+        # This can happen when the server changes the format to use (e.g. changing quality).
+        #
+        # Changing a format will require adding some logic to handle inactive formats.
+        # Given we only provide one FormatId currently, and this should not occur in this case,
+        # we will mark this as not currently supported and bail.
+        for izf in self._initialized_formats.values():
+            if izf.format_selector is format_selector:
+                raise SabrStreamError('Server changed format. Changing formats is not currently supported')
 
         duration_ms = (
                 fmt_init_metadata.duration
