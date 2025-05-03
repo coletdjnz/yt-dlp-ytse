@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+import contextlib
 import dataclasses
 import enum
 import math
@@ -13,7 +14,7 @@ from yt_dlp import int_or_none, traverse_obj
 from yt_dlp.networking import Request, Response
 from yt_dlp.networking.exceptions import HTTPError, TransportError
 from yt_dlp.utils import parse_qs, update_url_query
-from yt_dlp.utils._utils import _YDLLogger, RetryManager, bug_reports_message, YoutubeDLError
+from yt_dlp.utils._utils import _YDLLogger, RetryManager, bug_reports_message, YoutubeDLError, str_or_none, orderedSet
 
 from .protos import unknown_fields
 from .protos.videostreaming.buffered_range import BufferedRange
@@ -195,6 +196,7 @@ class SabrStream:
         debug=False,
         po_token: str = None,
         http_retries: int = 10,
+        host_fallback_threshold: int = 8,
         live_end_wait_sec: int = 10,
     ):
 
@@ -209,6 +211,7 @@ class SabrStream:
         self.live_segment_target_duration_sec = live_segment_target_duration_sec or 5
         self.start_time_ms = start_time_ms
         self.http_retries = http_retries
+        self.host_fallback_threshold = host_fallback_threshold
         self.live_end_wait_sec = live_end_wait_sec
 
         if self.live_segment_target_duration_sec:
@@ -233,7 +236,6 @@ class SabrStream:
         self._request_had_data = False
         self._sabr_seeked = False
         self._header_ids: dict[int, Segment] = {}
-        self._bad_hosts = []
 
         self._total_duration_ms = None
 
@@ -282,20 +284,25 @@ class SabrStream:
         if self._consumed:
             raise SabrStreamConsumedError('SABR stream has already been consumed')
 
-        read_retrymanager = None
+        http_retry_manager = None
+
+        def report_retry(err, count, retries, fatal=True):
+            if count >= self.host_fallback_threshold:
+                self._process_fallback_server()
+            RetryManager.report_retry(
+                        err, count, retries, info=self._logger.info,
+                        warn=lambda msg: self._logger.warning(f'[sabr] Got error: {msg}'),
+                        error=None if fatal else lambda msg: self._logger.warning(f'[sabr] Got error: {msg}'),
+                        sleep_func=0  # todo: use sleep func configuration
+                    )
 
         while not self._consumed:
             # If an error occurs on response read, retry with the same GVS server using this retry manager.
             # Once retries have been exceeded, fall back to the next GVS server.
-            if read_retrymanager is None:
-                read_retrymanager = iter(RetryManager(self.http_retries, self._report_retry))
+            if http_retry_manager is None:
+                http_retry_manager = iter(RetryManager(self.http_retries, report_retry))
 
-            try:
-                res_retry = next(read_retrymanager)
-            except TransportError:
-                self.next_fallback_server()
-                read_retrymanager = None
-                continue
+            retry = next(http_retry_manager)
 
             yield from self.process_expiry()
             vpabr = VideoPlaybackAbrRequest(
@@ -320,21 +327,42 @@ class SabrStream:
             self.write_sabr_debug(f'video_playback_ustreamer_config: {self.video_playback_ustreamer_config}')
             self.write_sabr_debug(f'Sending videoplayback SABR request: {vpabr}')
 
-            response = self._request_sabr(payload)
-
+            response = None
             try:
-                yield from self.parse_ump_response(response)
-                # Reset the retry count, if any
-                read_retrymanager = None
+                response = self._urlopen(
+                    Request(
+                        url=self.server_abr_streaming_url,
+                        method='POST',
+                        data=payload,
+                        query={'rn': self._request_number},
+                        headers={'content-type': 'application/x-protobuf'}
+                    )
+                )
+                self._request_number += 1
             except TransportError as e:
-                self._logger.warning(f'Transport Error during read: {e}')
-                res_retry.error = e
-                self._is_retry = True
+                self._logger.warning(f'Transport Error: {e}')
+                retry.error = e
+            except HTTPError as e:
+                # retry on 5xx errors only
+                if 500 <= e.status < 600:
+                    self._logger.warning(f'HTTP Error: {e.status} - {e.reason}')
+                    retry.error = e
+                else:
+                    raise SabrStreamError(f'HTTP Error: {e.status} - {e.reason}')
 
-            # We are expecting to stay in the same place for a retry
-            if not self._is_retry:
+            if response:
+                try:
+                    yield from self.parse_ump_response(response)
+                except TransportError as e:
+                    self._logger.warning(f'Transport Error during read: {e}')
+                    retry.error = e
+
+            # We are expecting to stay in the same place for a retry or a redirect
+            if not self._is_retry and not retry.error:
+                http_retry_manager = None
                 # Calculate and apply the next playback time to skip to
-                yield from self._prepare_next_playback_time()
+                if not self._redirected:
+                    yield from self._prepare_next_playback_time()
 
             self._next_request_policy = None
             self._redirected = False
@@ -344,52 +372,12 @@ class SabrStream:
 
         self._consumed = True
 
-    def _request_sabr(self, payload):
-        # Attempt to retry the request if there is an intermittent network issue.
-        # Otherwise, it may be a server issue, so try to fall back to another host.
-        while True:
-            try:
-                for retry in RetryManager(self.http_retries, self._report_retry):
-                    try:
-                        response = self._urlopen(
-                            Request(
-                                url=self.server_abr_streaming_url,
-                                method='POST',
-                                data=payload,
-                                query={'rn': self._request_number},
-                                headers={'content-type': 'application/x-protobuf'}
-                            )
-                        )
-                        self._request_number += 1
-                        return response
-                    except TransportError as e:
-                        self._logger.warning(f'Transport Error: {e}')
-                        retry.error = e
-                        continue
-                    except HTTPError as e:
-                        # retry on 5xx errors only
-                        if 500 <= e.status < 600:
-                            self._logger.warning(f'HTTP Error: {e.status} - {e.reason}')
-                            retry.error = e
-                            continue
-                        raise
-
-            except HTTPError as e:
-                self._logger.debug(f'HTTP Error: {e.status} - {e.reason}')
-                # on 5xx errors, if a retry does not work, try falling back to another host?
-                if 500 <= e.status < 600:
-                    self.next_fallback_server()
-                else:
-                    raise SabrStreamError(f'HTTP Error: {e.status} - {e.reason}')
-
-            except TransportError as e:
-                self._logger.warning(f'Transport Error: {e}')
-                self.next_fallback_server()
 
     def _prepare_next_playback_time(self):
         if len(self._header_ids):
             self._logger.warning(f'Extraneous header IDs left: {list(self._header_ids.values())}')
 
+        # TODO: handle if no format was initialized, and there are no buffered ranges
         wait_seconds = 0
 
         # Don't count retries e.g. SPS.
@@ -530,13 +518,6 @@ class SabrStream:
             self.write_sabr_debug(f'sleeping {wait_seconds} seconds for next fragment')
             time.sleep(wait_seconds)
 
-    def _report_retry(self, err, count, retries, fatal=True):
-        RetryManager.report_retry(
-            err, count, retries, info=self._logger.info,
-            warn=lambda msg: self._logger.warning(f'[sabr] Got error: {msg}'),
-            error=None if fatal else lambda msg: self._logger.warning(f'[sabr] Got error: {msg}'),
-            sleep_func=0  # todo: use sleep func configuration
-        )
 
     def write_sabr_debug(self, message=None, part=None, protobug_obj=None, data=None):
         msg = ''
@@ -827,26 +808,15 @@ class SabrStream:
         self.server_abr_streaming_url = sabr_redirect.redirect_url
         self._redirected = True
 
-    def next_fallback_server(self):
+    def _process_fallback_server(self):
         # Attempt to fall back to another GVS host in the case the current one fails
-        qs = parse_qs(self.server_abr_streaming_url)
-        parsed_url = urlparse(self.server_abr_streaming_url)
-        self._bad_hosts.append(parsed_url.netloc)
+        new_url = next_gvs_fallback_url(self.server_abr_streaming_url)
+        if not new_url:
+            self.write_sabr_debug('No more GVS hosts available')
 
-        for n in range(1, 5):
-            for fh in qs.get('mn', [])[0].split(','):
-                fallback = f'rr{n}---{fh}.googlevideo.com'
-                if fallback not in self._bad_hosts:
-                    fallback_count = int_or_none(qs.get('fallback_count', ['0'])[0], default=0) + 1
-                    self.server_abr_streaming_url = update_url_query(
-                        parsed_url._replace(netloc=fallback).geturl(), {'fallback_count': fallback_count})
-                    self._logger.warning(f'Failed to connect to GVS host {parsed_url.netloc}. Retrying with GVS host {fallback}')
-                    self._redirected = True
-                    self._is_retry = True
-                    return
-
-        self._logger.debug(f'GVS fallback failed - no working hosts available. Bad hosts: {self._bad_hosts}')
-        raise SabrStreamError('Unable to find a working Google Video Server. Is your connection okay?')
+        self._logger.warning(f'Failed to connect to GVS host {urlparse(self.server_abr_streaming_url).netloc}. Retrying with GVS host {urlparse(new_url).netloc}')
+        self.server_abr_streaming_url = new_url
+        self._redirected = True
 
     def _match_format_selector(self, format_init_metadata: FormatInitializationMetadata):
         for format_selector in (self._video_format_selector, self._audio_format_selector):
@@ -957,7 +927,7 @@ class SabrStream:
 
 
 def get_br_chain(start_buffered_range: BufferedRange, buffered_ranges: List[BufferedRange]) -> List[BufferedRange]:
-    # TODO: test
+    # TODO: unit test
     # Return the continuous buffered range chain starting from the given buffered range
     # Note: It is assumed a segment is only present in one buffered range - it should not be allowed in multiple (by process media header)
     chain = [start_buffered_range]
@@ -967,3 +937,54 @@ def get_br_chain(start_buffered_range: BufferedRange, buffered_ranges: List[Buff
         elif br.start_segment_index > chain[-1].end_segment_index + 1:
             break
     return chain
+
+def next_gvs_fallback_url(gvs_url):
+    # TODO: unit test
+    qs = parse_qs(gvs_url)
+    gvs_url_parsed = urlparse(gvs_url)
+    fvip = int_or_none(qs.get('fvip', [None])[0])
+    mvi = int_or_none(qs.get('mvi', [None])[0])
+    mn = str_or_none(qs.get('mn', [None])[0], default='').split(',')
+    fallback_count = int_or_none(qs.get('fallback_count', ['0'])[0], default=0)
+
+    hosts = []
+
+    def build_host(current_host, f, m):
+        rr = current_host.startswith('rr')
+        if f is None or m is None:
+            return None
+        return ('rr' if rr else 'r') + str(f) + '---' + m + '.googlevideo.com'
+
+    original_host = build_host(gvs_url_parsed.netloc, mvi, mn[0])
+
+    # Order of fallback hosts:
+    # 1. Fallback host in url (mn[1] + fvip)
+    # 2. Fallback hosts brute forced (this usually contains the original host)
+    for mn_entry in reversed(mn):
+        for fvip_entry in orderedSet([fvip, 1,2,3,4,5]):
+            fallback_host = build_host(gvs_url_parsed.netloc, fvip_entry, mn_entry)
+            if fallback_host and fallback_host not in hosts:
+                hosts.append(fallback_host)
+
+    if not hosts or len(hosts) == 1:
+        return None
+
+    # if first fallback, anchor to start of list so we start with the known fallback hosts
+    # Sometimes we may get a SABR_REDIRECT after a fallback, which gives a new host with new fallbacks.
+    # In this case, the original host indicated by the url params would match the current host
+    current_host_index = -1
+    if fallback_count > 0 and gvs_url_parsed.netloc != original_host:
+        with contextlib.suppress(ValueError):
+            current_host_index = hosts.index(gvs_url_parsed.netloc)
+
+    def next_host(idx, h):
+        return h[(idx + 1) % len(h)]
+
+    new_host = next_host(current_host_index + 1, hosts)
+    # If the current URL only has one fallback host, then the first fallback host is the same as the current host.
+    if new_host == gvs_url_parsed.netloc:
+        new_host = next_host(current_host_index + 2, hosts)
+
+    # todo: do not return new_host if it still matches the original host
+    return update_url_query(
+        gvs_url_parsed._replace(netloc=new_host).geturl(), {'fallback_count': fallback_count + 1})
