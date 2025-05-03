@@ -70,6 +70,7 @@ class UMPPartType(enum.IntEnum):
     MEDIA_HEADER = 20
     MEDIA = 21
     MEDIA_END = 22
+    CONFIG = 30  # deprecated?
     LIVE_METADATA = 31
     HOSTNAME_CHANGE_HINT = 32
     LIVE_METADATA_PROMISE = 33

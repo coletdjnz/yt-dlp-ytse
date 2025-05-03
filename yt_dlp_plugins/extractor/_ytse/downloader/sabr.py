@@ -13,10 +13,9 @@ from yt_dlp.utils import traverse_obj, int_or_none, DownloadError
 from yt_dlp.utils._utils import _YDLLogger
 from yt_dlp.utils.progress import ProgressCalculator
 
-from ..protos import (
-    FormatId,
-    ClientInfo
-)
+from ..protos.videostreaming.format_id import FormatId
+from ..protos.innertube.client_info import ClientInfo
+
 from ..sabr import SabrStream, AudioSelector, VideoSelector, MediaSabrPart, PoTokenStatusSabrPart, \
     RefreshPlayerResponseSabrPart, MediaSeekSabrPart
 

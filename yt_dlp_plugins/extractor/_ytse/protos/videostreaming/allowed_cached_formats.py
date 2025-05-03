@@ -1,5 +1,5 @@
 import protobug
-from ._format_id import FormatId
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.format_id import FormatId
 
 
 @protobug.message

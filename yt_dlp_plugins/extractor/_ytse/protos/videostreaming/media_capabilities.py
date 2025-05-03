@@ -1,24 +1,19 @@
 import typing
 import protobug
-
-
-@protobug.message
-class DrmCapabilities:
-    supports_widevine_l1: typing.Optional[protobug.Bool] = protobug.field(1, default=None)
-    supports_widevine_l3: typing.Optional[protobug.Bool] = protobug.field(2, default=None)
-    supports_fairplay: typing.Optional[protobug.Bool] = protobug.field(3, default=None)
-    supports_playready: typing.Optional[protobug.Bool] = protobug.field(4, default=None)
-    supports_hdcp: typing.Optional[protobug.Bool] = protobug.field(5, default=None)
-
-
-@protobug.message
-class SpatialAudioCapabilities:
-    supports_multichannel_spatial_audio: typing.Optional[protobug.Bool] = protobug.field(1, default=None)
-    supports_stereo_spatial_audio: typing.Optional[protobug.Bool] = protobug.field(2, default=None)
+from .per_playback_attributes import PerPlaybackAttributes
 
 
 @protobug.message
 class VideoFormatCapability:
+
+    @protobug.message
+    class DrmCapabilities:
+        supports_widevine_l1: typing.Optional[protobug.Bool] = protobug.field(1, default=None)
+        supports_widevine_l3: typing.Optional[protobug.Bool] = protobug.field(2, default=None)
+        supports_fairplay: typing.Optional[protobug.Bool] = protobug.field(3, default=None)
+        supports_playready: typing.Optional[protobug.Bool] = protobug.field(4, default=None)
+        supports_hdcp: typing.Optional[protobug.Bool] = protobug.field(5, default=None)
+
     class Profile(protobug.Enum, strict=False):
         UNKNOWN_PROFILE = 0
         MPEG4_SIMPLE = 1
@@ -85,17 +80,18 @@ class AudioFormatCapability:
         IAMF = 12
         XHEAAC = 13
 
+
+    @protobug.message
+    class SpatialAudioCapabilities:
+        supports_multichannel_spatial_audio: typing.Optional[protobug.Bool] = protobug.field(1, default=None)
+        supports_stereo_spatial_audio: typing.Optional[protobug.Bool] = protobug.field(2, default=None)
+
     audio_codec: typing.Optional[AudioCodec] = protobug.field(1, default=None)
     num_channels: typing.Optional[protobug.Int32] = protobug.field(2, default=None)
     max_bitrate_bps: typing.Optional[protobug.Int32] = protobug.field(3, default=None)
     spatial_audio_capabilities: typing.Optional[SpatialAudioCapabilities] = protobug.field(4, default=None)
     drm_capability: typing.Optional[protobug.Int32] = protobug.field(5, default=None)
     spatial_capability_bitmask: typing.Optional[protobug.Int32] = protobug.field(6, default=None)
-
-
-@protobug.message
-class PerPlaybackAttributes:
-    itag_deny_list: list[protobug.Int32] = protobug.field(1, default_factory=list)
 
 
 @protobug.message

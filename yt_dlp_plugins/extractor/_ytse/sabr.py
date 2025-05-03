@@ -15,24 +15,24 @@ from yt_dlp.networking.exceptions import HTTPError, TransportError
 from yt_dlp.utils import parse_qs, update_url_query
 from yt_dlp.utils._utils import _YDLLogger, RetryManager, bug_reports_message, YoutubeDLError
 
-from .protos import (
-    ClientInfo,
-    ClientAbrState,
-    NextRequestPolicy,
-    LiveMetadata,
-    VideoPlaybackAbrRequest,
-    StreamerContext,
-    unknown_fields,
-    MediaHeader,
-    BufferedRange,
-    TimeRange,
-    StreamProtectionStatus,
-    SabrRedirect,
-    FormatInitializationMetadata,
-    SabrSeek,
-    SabrError,
-    FormatId
-)
+from .protos import unknown_fields
+from .protos.videostreaming.buffered_range import BufferedRange
+from .protos.videostreaming.client_abr_state import ClientAbrState
+from .protos.videostreaming.format_id import FormatId
+from .protos.videostreaming.media_header import MediaHeader
+from .protos.videostreaming.streamer_context import StreamerContext
+from .protos.videostreaming.video_playback_abr_request import VideoPlaybackAbrRequest
+from .protos.videostreaming.live_metadata import LiveMetadata
+from .protos.videostreaming.time_range import TimeRange
+from .protos.videostreaming.stream_protection_status import StreamProtectionStatus
+from .protos.videostreaming.sabr_redirect import SabrRedirect
+from .protos.videostreaming.format_initialization_metadata import FormatInitializationMetadata
+from .protos.videostreaming.sabr_seek import SabrSeek
+from .protos.videostreaming.sabr_error import SabrError
+
+from .protos.innertube.client_info import ClientInfo
+from .protos.innertube.next_request_policy import NextRequestPolicy
+
 from .ump import UMPParser, UMPPartType, UMPPart
 
 @dataclasses.dataclass
@@ -287,13 +287,13 @@ class SabrStream:
                 client_abr_state=self._client_abr_state,
                 selected_video_format_ids=self._selected_video_format_ids,
                 selected_audio_format_ids=self._selected_audio_format_ids,
-                selected_format_ids=[
+                initialized_format_ids=[
                     initialized_format.format_id for initialized_format in self._initialized_formats.values()
                 ],
                 video_playback_ustreamer_config=base64.urlsafe_b64decode(self.video_playback_ustreamer_config),
                 streamer_context=StreamerContext(
                      po_token=self.po_token and base64.urlsafe_b64decode(self.po_token),
-                     playback_cookie=self._next_request_policy and protobug.dumps(self._next_request_policy.playback_cookie),
+                     playback_cookie=self._next_request_policy and self._next_request_policy.playback_cookie,
                      client_info=self.client_info
                  ),
                 buffered_ranges=[
@@ -705,8 +705,8 @@ class SabrStream:
                 start_segment_index=segment.sequence_number,
                 end_segment_index=segment.sequence_number,
                 time_range=TimeRange(
-                    start=segment.start_ms,
-                    duration=segment.duration_ms,
+                    start_ticks=segment.start_ms,
+                    duration_ticks=segment.duration_ms,
                     timescale=1000  # ms
                 )
             ))
@@ -720,7 +720,7 @@ class SabrStream:
             buffered_range.duration_ms += segment.duration_ms
             if buffered_range.time_range.timescale != 1000:
                 raise SabrStreamError(f'Buffered range timescale bad: {buffered_range.time_range.timescale} != 1000')
-            buffered_range.time_range.duration += segment.duration_ms
+            buffered_range.time_range.duration_ticks += segment.duration_ms
         else:
             # Attempt to keep in sync with livestream, as the segment duration target is not always perfect.
             # The server seems to care more about the segment index than the duration.
@@ -728,7 +728,7 @@ class SabrStream:
                 raise SabrStreamError(f'Buffered range start time mismatch: {buffered_range.start_time_ms} > {segment.start_ms}')
 
             new_duration = (segment.start_ms - buffered_range.start_time_ms) + segment.duration_ms
-            buffered_range.duration_ms = buffered_range.time_range.duration = new_duration
+            buffered_range.duration_ms = buffered_range.time_range.duration_ticks = new_duration
 
     def process_live_metadata(self, part: UMPPart):
         self._live_metadata = protobug.loads(part.data, LiveMetadata)
@@ -861,8 +861,8 @@ class SabrStream:
                 start_segment_index=0,
                 end_segment_index=JS_MAX_SAFE_INTEGER,
                 time_range=TimeRange(
-                    start=0,
-                    duration=JS_MAX_SAFE_INTEGER,
+                    start_ticks=0,
+                    duration_ticks=JS_MAX_SAFE_INTEGER,
                     timescale=1000
                 )
             )]

@@ -1,31 +1,19 @@
 import typing
 import protobug
-from ._format_id import FormatId
-from ._time_range import TimeRange
+from yt_dlp_plugins.extractor._ytse.protos.innertube.compression_algorithm import CompressionAlgorithm
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.format_id import FormatId
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.time_range import TimeRange
 
 
 @protobug.message
 class MediaHeader:
-    class Compression(protobug.Enum, strict=False):
-        COMPRESSION_ALGORITHM_UNKNOWN = 0
-        COMPRESSION_ALGORITHM_NONE = 1
-        COMPRESSION_ALGORITHM_GZIP = 2
-
-        """
-        may also match:
-        COMPRESSION_FORMAT_UNKNOWN = 0
-        COMPRESSION_FORMAT_IDENTITY = 1
-        COMPRESSION_FORMAT_GZIP = 2
-        COMPRESSION_FORMAT_BROTLI = 3?
-        """
-
     header_id: typing.Optional[protobug.UInt32] = protobug.field(1, default=None)
     video_id: typing.Optional[protobug.String] = protobug.field(2, default=None)
     itag: typing.Optional[protobug.Int32] = protobug.field(3, default=None)
     last_modified: typing.Optional[protobug.UInt64] = protobug.field(4, default=None)
     xtags: typing.Optional[protobug.String] = protobug.field(5, default=None)
     start_data_range: typing.Optional[protobug.Int32] = protobug.field(6, default=None)
-    compression: typing.Optional[Compression] = protobug.field(7, default=None)
+    compression: typing.Optional[CompressionAlgorithm] = protobug.field(7, default=None)
     is_init_segment: typing.Optional[protobug.Bool] = protobug.field(8, default=None)
     sequence_number: typing.Optional[protobug.Int64] = protobug.field(9, default=None)
     unknown_field_10: typing.Optional[protobug.Int64] = protobug.field(10, default=None)

@@ -12,6 +12,5 @@ class Error:
 @protobug.message
 class SabrError:
     type: typing.Optional[protobug.String] = protobug.field(1, default=None)
-    code: typing.Optional[protobug.Int32] = protobug.field(2, default=None)
-    # I have not seen multiple errors in a single response, but it might be possible
-    errors: list[Error] = protobug.field(3, default_factory=list)
+    action: typing.Optional[protobug.Int32] = protobug.field(2, default=None)
+    error: typing.Optional[Error] = protobug.field(3, default=None)

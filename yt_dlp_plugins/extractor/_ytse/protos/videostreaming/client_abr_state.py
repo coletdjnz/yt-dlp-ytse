@@ -1,73 +1,13 @@
 import typing
 import protobug
-from ._media_capabilities import MediaCapabilities
+from yt_dlp_plugins.extractor._ytse.protos.innertube.network_metered_state import NetworkMeteredState
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.media_capabilities import MediaCapabilities
+from yt_dlp_plugins.extractor._ytse.protos.innertube.audio_quality import AudioQuality
+from yt_dlp_plugins.extractor._ytse.protos.innertube.audio_route_output import AudioRouteOutputType
+from yt_dlp_plugins.extractor._ytse.protos.innertube.detailed_network_type import DetailedNetworkType
+from yt_dlp_plugins.extractor._ytse.protos.innertube.drm_track_type import DrmTrackType
+from yt_dlp_plugins.extractor._ytse.protos.innertube.video_quality_setting import VideoQualitySetting
 
-
-class DetailedNetworkType(protobug.Enum, strict=False):
-    DETAILED_NETWORK_TYPE_UNKNOWN = 0
-    DETAILED_NETWORK_TYPE_EDGE = 101
-    DETAILED_NETWORK_TYPE_GPRS = 102
-    DETAILED_NETWORK_TYPE_1_X_RTT = 103
-    DETAILED_NETWORK_TYPE_CDMA = 104
-    DETAILED_NETWORK_TYPE_EVDO_0 = 105
-    DETAILED_NETWORK_TYPE_EVDO_A = 106
-    DETAILED_NETWORK_TYPE_HSDPA = 107
-    DETAILED_NETWORK_TYPE_HSPA = 108
-    DETAILED_NETWORK_TYPE_HSUPA = 109
-    DETAILED_NETWORK_TYPE_IDEN = 110
-    DETAILED_NETWORK_TYPE_UMTS = 111
-    DETAILED_NETWORK_TYPE_EVDO_B = 112
-    DETAILED_NETWORK_TYPE_EHRPD = 113
-    DETAILED_NETWORK_TYPE_HSPAP = 114
-    DETAILED_NETWORK_TYPE_LTE = 115
-    DETAILED_NETWORK_TYPE_WIFI = 116
-    DETAILED_NETWORK_TYPE_BLUETOOTH = 117
-    DETAILED_NETWORK_TYPE_ETHERNET = 118
-    DETAILED_NETWORK_TYPE_WIMAX = 119
-    DETAILED_NETWORK_TYPE_MOBILE_UNKNOWN = 120
-    DETAILED_NETWORK_TYPE_NON_MOBILE_UNKNOWN = 121
-    DETAILED_NETWORK_TYPE_DISCONNECTED = 122
-    DETAILED_NETWORK_TYPE_APP_WIFI_HOTSPOT = 123
-    DETAILED_NETWORK_TYPE_INTERNAL_WIFI_IMPAIRED = 124
-    DETAILED_NETWORK_TYPE_NR_SA = 125
-    DETAILED_NETWORK_TYPE_NR_NSA = 126
-
-
-class AudioQuality(protobug.Enum, strict=False):
-    AUDIO_QUALITY_UNKNOWN = 0
-    AUDIO_QUALITY_ULTRALOW = 5
-    AUDIO_QUALITY_LOW = 10
-    AUDIO_QUALITY_MEDIUM = 20
-    AUDIO_QUALITY_HIGH = 30
-
-
-class VideoQualitySetting(protobug.Enum, strict=False):
-    VIDEO_QUALITY_SETTING_UNKNOWN = 0
-    VIDEO_QUALITY_SETTING_HIGHER_QUALITY = 1
-    VIDEO_QUALITY_SETTING_DATA_SAVER = 2
-    VIDEO_QUALITY_SETTING_ADVANCED_MENU = 3
-
-
-class AudioRouteOutputType(protobug.Enum, strict=False):
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_UNKNOWN = 0
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_LINE_OUT = 1
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_HEADPHONES = 2
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_BLUETOOTH_A2DP = 3
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_BUILT_IN_RECEIVER = 4
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_BUILT_IN_SPEAKER = 5
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_HDMI = 6
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_AIR_PLAY = 7
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_BLUETOOTH_LE = 8
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_BLUETOOTH_HFP = 9
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_USB_AUDIO = 10
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_CAR_PLAY = 11
-    PLAYBACK_AUDIO_ROUTE_OUTPUT_TYPE_ANDROID_AUDIO = 12
-
-
-class NetworkMeteredState(protobug.Enum, strict=False):
-    NETWORK_METERED_STATE_UNKNOWN = 0
-    NETWORK_METERED_STATE_UNMETERED = 1
-    NETWORK_METERED_STATE_METERED = 2
 
 
 @protobug.message
@@ -88,7 +28,7 @@ class ClientAbrState:
     audio_route: typing.Optional[AudioRouteOutputType] = protobug.field(27, default=None)  # seen on android = 5
     player_time_ms: typing.Optional[protobug.Int64] = protobug.field(28, default=None)
     time_since_last_seek: typing.Optional[protobug.Int64] = protobug.field(29, default=None)
-    data_saver_mode: typing.Optional[protobug.Int32] = protobug.field(30, default=None)  # seen on android = 0, todo: enum or bool?
+    data_saver_mode: typing.Optional[protobug.Int32] = protobug.field(30, default=None)  # seen on android = 0, todo: enum or bool? or low_power_mode
     network_metered_state: typing.Optional[NetworkMeteredState] = protobug.field(32, default=None)  # seen on android = 0
     visibility: typing.Optional[protobug.Int32] = protobug.field(34, default=None)
     playback_rate: typing.Optional[protobug.Float] = protobug.field(35, default=None)
@@ -103,7 +43,7 @@ class ClientAbrState:
     unknown_field_50: typing.Optional[protobug.Int32] = protobug.field(50, default=None)
     unknown_field_51: typing.Optional[protobug.Int32] = protobug.field(51, default=None)
     sabr_report_request_cancellation_info: typing.Optional[protobug.Int32] = protobug.field(54, default=None)
-    #unknown_field_55: typing.Optional[protobug.Bytes] = protobug.field(55, default=None)  # some sort of message
+    authorized_drm_track_types: typing.Optional[DrmTrackType] = protobug.field(55, default=None)
     unknown_field_56: typing.Optional[protobug.Bool] = protobug.field(56, default=None)
     unknown_field_57: typing.Optional[protobug.Int64] = protobug.field(57, default=None)
     prefer_vp9: typing.Optional[protobug.Bool] = protobug.field(58, default=None)
@@ -116,3 +56,9 @@ class ClientAbrState:
     sabr_force_proxima: typing.Optional[protobug.Int32] = protobug.field(66, default=None)
     unknown_field_67: typing.Optional[protobug.Int32] = protobug.field(67, default=None)
     sabr_force_max_network_interruption_duration_ms: typing.Optional[protobug.Int64] = protobug.field(68, default=None)
+    unknown_field_69: typing.Optional[protobug.String] = protobug.field(69, default=None)
+     #unknown_field_70: typing.Optional[protobug.Bytes] = protobug.field(70, default=None)  # message of some sort
+
+    unknown_field_73: typing.Optional[AudioQuality] = protobug.field(73, default=None)
+
+    unknown_field_77: typing.Optional[protobug.Int32] = protobug.field(77, default=None)

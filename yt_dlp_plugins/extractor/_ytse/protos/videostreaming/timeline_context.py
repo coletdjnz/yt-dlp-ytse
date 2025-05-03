@@ -1,10 +1,10 @@
 import typing
 import protobug
-from ._sabr_context_update import SabrContextUpdate
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.sabr_context_update import SabrContextUpdate
 
 
 @protobug.message
-class rkH:
+class UnknownMessage1:
     video_id: typing.Optional[protobug.String] = protobug.field(1, default=None) # videoId
     pst: typing.Optional[protobug.Int32] = protobug.field(2, default=None)  # time - playback start time?
     lst: typing.Optional[protobug.Int32] = protobug.field(3, default=None) # lst
@@ -15,15 +15,15 @@ class rkH:
 
 
 @protobug.message
-class i8V:
-    L4: typing.Optional[protobug.Int32] = protobug.field(1, default=None) # nonv
+class UnknownMessage2:
+    unknown_field_1: typing.Optional[protobug.Int32] = protobug.field(1, default=None) # "nonv"
 
 
 @protobug.message
 class Clip:
     clip_id: typing.Optional[protobug.String] = protobug.field(1, default=None)
-    T7: typing.Optional[rkH] = protobug.field(2, default=None)
-    h2: typing.Optional[i8V] = protobug.field(3, default=None)
+    unknown_field_2: typing.Optional[UnknownMessage1] = protobug.field(2, default=None)
+    unknown_field_3: typing.Optional[UnknownMessage2] = protobug.field(3, default=None)
 
 
 @protobug.message
