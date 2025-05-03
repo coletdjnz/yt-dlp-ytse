@@ -76,11 +76,11 @@ class SabrPart:
 
 
 @dataclasses.dataclass
-class MediaSabrPart(SabrPart):
+class MediaSegmentSabrPart(SabrPart):
     format_selector: FormatSelector
     format_id: FormatId
     player_time_ms: int = 0
-    start_bytes: int = 0
+    start_bytes: int = None
     fragment_index: int = None
     fragment_count: int = None
     is_init_segment: bool = False
@@ -136,6 +136,7 @@ class Segment:
     duration_estimated: bool = False
     # Whether we should discard the segment data
     discard: bool = False
+    data: bytes = b''
 
 
 @dataclasses.dataclass
@@ -535,9 +536,9 @@ class SabrStream:
             if part.part_type == UMPPartType.MEDIA_HEADER:
                 self.process_media_header(part)
             elif part.part_type == UMPPartType.MEDIA:
-                yield from self.process_media(part)
+                self.process_media(part)
             elif part.part_type == UMPPartType.MEDIA_END:
-                self.process_media_end(part)
+                yield from self.process_media_end(part)
             elif part.part_type == UMPPartType.STREAM_PROTECTION_STATUS:
                 yield from self.process_stream_protection_status(part)
             elif part.part_type == UMPPartType.SABR_REDIRECT:
@@ -561,6 +562,14 @@ class SabrStream:
         self.write_sabr_debug(part=part, protobug_obj=media_header, data=part.data)
         if not media_header.format_id:
             raise SabrStreamError(f'Format ID not found in MediaHeader (media_header={media_header})')
+
+        # Guard. This should not happen, except if we don't clear partial segments
+        if media_header.header_id in self._header_ids:
+            raise SabrStreamError(f'Header ID {media_header.header_id} already exists')
+
+        if media_header.compression:
+            # Unknown when this is used, but it is not supported
+            raise SabrStreamError(f'Compression not supported in MediaHeader (media_header={media_header})')
 
         initialized_format = self._initialized_formats.get(str(media_header.format_id))
         if not initialized_format:
@@ -640,28 +649,16 @@ class SabrStream:
         header_id = part.data[0]
         segment = self._header_ids.get(header_id)
         if not segment:
-            self.write_sabr_debug(f'Header ID {header_id} not found', part=part)
+            self.write_sabr_debug(f'Header ID {header_id} not found')
             return
 
         # Will count discarded (ignored) media as a request with data... as something is at least coming through
         self._request_had_data = True
 
-        if segment.discard:
-            self.write_sabr_debug(f'Discarding media for {segment.initialized_format.format_id}', part=part)
-            return
-
-        yield MediaSabrPart(
-            format_selector=segment.initialized_format.format_selector,
-            format_id=segment.format_id,
-            player_time_ms=self._client_abr_state.player_time_ms,
-            fragment_index=segment.sequence_number,
-            fragment_count=segment.initialized_format.total_sequences,
-            data=part.data[1:],
-            is_init_segment=segment.is_init_segment
-        )
+        # Store the data in the segment, which we will yield later when we have received all parts for the segment
+        segment.data += part.data[1:]
 
     def process_media_end(self, part: UMPPart):
-        # TODO: should probably publish a media end event so it knows when to stop writing fragment
         header_id = part.data[0]
         self.write_sabr_debug(f'Header ID: {header_id}', part=part)
         segment: Segment = self._header_ids.pop(header_id, None)
@@ -670,7 +667,31 @@ class SabrStream:
             self.write_sabr_debug(f'Received a MediaEnd for an unknown or already finished header ID {header_id}', part=part)
             return
 
-        self.write_sabr_debug(f'MediaEnd for {segment.format_id} (sequence {segment.sequence_number})', part=part)
+        self.write_sabr_debug(f'MediaEnd for {segment.format_id} (sequence {segment.sequence_number}, data length = {len(segment.data)})', part=part)
+
+        if segment.content_length is not None and len(segment.data) != segment.content_length:
+            raise SabrStreamError(
+                f'Content length mismatch for {segment.format_id} (sequence {segment.sequence_number}): '
+                f'expected {segment.content_length}, got {len(segment.data)}'
+            )
+
+        # Return the segment here because:
+        # 1. We can validate that we received the correct data length
+        # 2. In the case of a retry during segment media, the partial data is not sent to the caller
+        if not segment.discard:
+            # TODO: should we yield before or after processing the segment?
+            yield MediaSegmentSabrPart(
+                format_selector=segment.initialized_format.format_selector,
+                format_id=segment.format_id,
+                player_time_ms=self._client_abr_state.player_time_ms,
+                fragment_index=segment.sequence_number,
+                fragment_count=segment.initialized_format.total_sequences,
+                data=segment.data,
+                start_bytes=segment.start_data_range,
+                is_init_segment=segment.is_init_segment
+            )
+        else:
+            self.write_sabr_debug(f'Discarding media for {segment.initialized_format.format_id}', part=part)
 
         if segment.is_init_segment:
             segment.initialized_format.init_segment = segment

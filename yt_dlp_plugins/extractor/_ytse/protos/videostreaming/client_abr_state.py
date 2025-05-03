@@ -20,16 +20,16 @@ class ClientAbrState:
     client_viewport_height: typing.Optional[protobug.Int32] = protobug.field(19, default=None)
     client_bitrate_cap: typing.Optional[protobug.Int64] = protobug.field(20, default=None)
     sticky_resolution: typing.Optional[protobug.Int32] = protobug.field(21, default=None)
-    client_viewport_is_flexible: typing.Optional[protobug.Int32] = protobug.field(22, default=None)  # seen on android = 1 (when playing audio+video only)
+    client_viewport_is_flexible: typing.Optional[protobug.Int32] = protobug.field(22, default=None)
     bandwidth_estimate: typing.Optional[protobug.Int32] = protobug.field(23, default=None)
     min_audio_quality: typing.Optional[AudioQuality] = protobug.field(24, default=None)
     max_audio_quality: typing.Optional[AudioQuality] = protobug.field(25, default=None)
-    video_quality_setting: typing.Optional[VideoQualitySetting] = protobug.field(26, default=None)  # seen on android = 0
-    audio_route: typing.Optional[AudioRouteOutputType] = protobug.field(27, default=None)  # seen on android = 5
+    video_quality_setting: typing.Optional[VideoQualitySetting] = protobug.field(26, default=None)
+    audio_route: typing.Optional[AudioRouteOutputType] = protobug.field(27, default=None)
     player_time_ms: typing.Optional[protobug.Int64] = protobug.field(28, default=None)
     time_since_last_seek: typing.Optional[protobug.Int64] = protobug.field(29, default=None)
     data_saver_mode: typing.Optional[protobug.Int32] = protobug.field(30, default=None)  # seen on android = 0, todo: enum or bool? or low_power_mode
-    network_metered_state: typing.Optional[NetworkMeteredState] = protobug.field(32, default=None)  # seen on android = 0
+    network_metered_state: typing.Optional[NetworkMeteredState] = protobug.field(32, default=None)
     visibility: typing.Optional[protobug.Int32] = protobug.field(34, default=None)
     playback_rate: typing.Optional[protobug.Float] = protobug.field(35, default=None)
     elapsed_wall_time_ms: typing.Optional[protobug.Int64] = protobug.field(36, default=None)
@@ -56,9 +56,10 @@ class ClientAbrState:
     sabr_force_proxima: typing.Optional[protobug.Int32] = protobug.field(66, default=None)
     unknown_field_67: typing.Optional[protobug.Int32] = protobug.field(67, default=None)
     sabr_force_max_network_interruption_duration_ms: typing.Optional[protobug.Int64] = protobug.field(68, default=None)
-    unknown_field_69: typing.Optional[protobug.String] = protobug.field(69, default=None)
-     #unknown_field_70: typing.Optional[protobug.Bytes] = protobug.field(70, default=None)  # message of some sort
-
+    audio_track_id: typing.Optional[protobug.String] = protobug.field(69, default=None)
+     #unknown_field_70: typing.Optional[protobug.Bytes] = protobug.field(70, default=None)  # message or enum of some sort
+    unknown_field_71: typing.Optional[protobug.Int32] = protobug.field(71, default=None)  # may be a bool
+    unknown_field_72: typing.Optional[protobug.Bytes] = protobug.field(72, default=None)
     unknown_field_73: typing.Optional[AudioQuality] = protobug.field(73, default=None)
 
     unknown_field_77: typing.Optional[protobug.Int32] = protobug.field(77, default=None)

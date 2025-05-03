@@ -16,7 +16,7 @@ from yt_dlp.utils.progress import ProgressCalculator
 from ..protos.videostreaming.format_id import FormatId
 from ..protos.innertube.client_info import ClientInfo
 
-from ..sabr import SabrStream, AudioSelector, VideoSelector, MediaSabrPart, PoTokenStatusSabrPart, \
+from ..sabr import SabrStream, AudioSelector, VideoSelector, MediaSegmentSabrPart, PoTokenStatusSabrPart, \
     RefreshPlayerResponseSabrPart, MediaSeekSabrPart
 
 
@@ -213,7 +213,7 @@ class SABRFD(FileDownloader):
                                 # Fetch a PO Token, bypass_cache=False
                                 pass
 
-                        elif isinstance(part, MediaSabrPart):
+                        elif isinstance(part, MediaSegmentSabrPart):
                             total_bytes += len(part.data)
                             if audio_format_request and part.format_selector is audio_format_request:
                                 audio_format_writer.write(part.data, SABRStatus(
