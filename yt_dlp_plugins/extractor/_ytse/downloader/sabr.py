@@ -1,7 +1,12 @@
 import collections
 import itertools
 from yt_dlp.downloader import FileDownloader
-from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
+
+try:
+    from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
+except ImportError:
+    from yt_dlp.extractor.youtube import INNERTUBE_CLIENTS
+
 from yt_dlp.utils import traverse_obj, int_or_none, DownloadError
 from yt_dlp.utils._utils import _YDLLogger
 from yt_dlp.utils.progress import ProgressCalculator
