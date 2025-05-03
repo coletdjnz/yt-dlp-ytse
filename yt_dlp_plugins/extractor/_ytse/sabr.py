@@ -377,7 +377,6 @@ class SabrStream:
         if len(self._header_ids):
             self._logger.warning(f'Extraneous header IDs left: {list(self._header_ids.values())}')
 
-        # TODO: handle if no format was initialized, and there are no buffered ranges
         wait_seconds = 0
 
         # Don't count retries e.g. SPS.
@@ -433,18 +432,25 @@ class SabrStream:
                     latest_buffered_ranges.append(chain[-1])
                     break # There should only be one chain for player_time_ms
 
+        min_buffered_duration_ms = None
 
         # Then set the player_time_ms to the lowest buffered range end of the initialized formats
-        lowest_izf_buffered_range = min(latest_buffered_ranges, key=lambda br: br.start_time_ms + br.duration_ms)
-        min_buffered_duration_ms = lowest_izf_buffered_range.start_time_ms + lowest_izf_buffered_range.duration_ms
+        if latest_buffered_ranges:
+            lowest_izf_buffered_range = min(latest_buffered_ranges, key=lambda br: br.start_time_ms + br.duration_ms)
+            min_buffered_duration_ms = lowest_izf_buffered_range.start_time_ms + lowest_izf_buffered_range.duration_ms
 
-        if len(latest_buffered_ranges) != len(self._initialized_formats):
-            # Missing a buffered range for a format - likely a format was seeked?
+        if len(latest_buffered_ranges) != len(self._initialized_formats) or min_buffered_duration_ms is None:
+            # Missing a buffered range for a format.
             # In this case, consider player_time_ms to be our correct next time
-            # May? happen in the case of:
+            # May happen in the case of:
+            # 1. A Format has not been initialized yet (can happen if response read fails)
+            # or
             # 1. SABR_SEEK to Time outside both formats buffered ranges
             # 2. ONE of the formats returns data after the SABR_SEEK in that request
-            min_buffered_duration_ms = min(min_buffered_duration_ms, self._client_abr_state.player_time_ms)
+            if min_buffered_duration_ms is None:
+                min_buffered_duration_ms = self._client_abr_state.player_time_ms
+            else:
+                min_buffered_duration_ms = min(min_buffered_duration_ms, self._client_abr_state.player_time_ms)
 
         next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
 
@@ -536,7 +542,6 @@ class SabrStream:
             self._logger.debug(f'SABR: {msg.strip()}')
 
     def parse_ump_response(self, response):
-        # xxx: this should handle the same response being provided multiple times with without issue. need to test.
         ump = UMPParser(response)
         for part in ump.iter_parts():
             if part.part_type == UMPPartType.MEDIA_HEADER:
@@ -686,6 +691,7 @@ class SabrStream:
         # 2. In the case of a retry during segment media, the partial data is not sent to the caller
         if not segment.discard:
             # TODO: should we yield before or after processing the segment?
+            # this should be after so if syncing buffered ranges we get the latest that reflects the segment
             yield MediaSegmentSabrPart(
                 format_selector=segment.initialized_format.format_selector,
                 format_id=segment.format_id,
