@@ -177,6 +177,9 @@ class SABRFDWriter:
                 sequence_number=part.sequence_number,
                 content_length=content_length,
             )
+            # TODO: we should limit sequence size
+            # TODO: we should perhaps store sequence information in another file, so we don't have to keep editing the main one
+            #  Sometimes if the file gets too large it can become easy to corrupt on shutdown
             sequence = progress_document.find_sequence(part.sequence_number)
             if not sequence:
                 sequence = SabrSequence(

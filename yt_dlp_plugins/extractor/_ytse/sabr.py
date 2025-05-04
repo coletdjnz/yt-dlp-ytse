@@ -320,6 +320,7 @@ class SabrStream:
             if self._http_retry_manager is None:
                 self._http_retry_manager = iter(RetryManager(self.http_retries, report_retry))
 
+            # TODO: there is a bug in the logic around here where this next call will sometimes raise a StopIteration
             self._current_http_retry = next(self._http_retry_manager)
 
             yield from self.process_expiry()
