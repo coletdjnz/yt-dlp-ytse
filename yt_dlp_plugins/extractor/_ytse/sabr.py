@@ -223,7 +223,11 @@ class SabrStream:
         if not self._audio_format_selector and not self._video_format_selector:
             raise SabrStreamError('No audio or video requested')
 
-        # State management
+        # Initialized formats is public so to allow the consumer to
+        #  update the buffered ranges if they have existing data
+        # IMPORTANT: initialized formats is assumed to contain ONLY ACTIVE formats
+        self.initialized_formats: dict[str, InitializedFormat] = {}
+
         self._requests_no_data = 0
         self._timestamp_no_data = None
         self._request_number = 0
@@ -244,7 +248,8 @@ class SabrStream:
         self._next_request_policy: NextRequestPolicy | None = None
         self._live_metadata: LiveMetadata | None = None
         self._client_abr_state: ClientAbrState
-        self._initialized_formats: dict[str, InitializedFormat] = {}
+        self._http_retry_manager: typing.Generator | None = None
+        self._current_http_retry = None
 
         self._consumed = False
 
@@ -290,7 +295,7 @@ class SabrStream:
         if self._consumed:
             raise SabrStreamConsumedError('SABR stream has already been consumed')
 
-        http_retry_manager = None
+        self._http_retry_manager = None
 
         def report_retry(err, count, retries, fatal=True):
             if count >= self.host_fallback_threshold:
@@ -305,10 +310,10 @@ class SabrStream:
         while not self._consumed:
             # If an error occurs on response read, retry with the same GVS server using this retry manager.
             # Once retries have been exceeded, fall back to the next GVS server.
-            if http_retry_manager is None:
-                http_retry_manager = iter(RetryManager(self.http_retries, report_retry))
+            if self._http_retry_manager is None:
+                self._http_retry_manager = iter(RetryManager(self.http_retries, report_retry))
 
-            retry = next(http_retry_manager)
+            self._current_http_retry = next(self._http_retry_manager)
 
             yield from self.process_expiry()
             vpabr = VideoPlaybackAbrRequest(
@@ -316,7 +321,7 @@ class SabrStream:
                 selected_video_format_ids=self._selected_video_format_ids,
                 selected_audio_format_ids=self._selected_audio_format_ids,
                 initialized_format_ids=[
-                    initialized_format.format_id for initialized_format in self._initialized_formats.values()
+                    initialized_format.format_id for initialized_format in self.initialized_formats.values()
                 ],
                 video_playback_ustreamer_config=base64.urlsafe_b64decode(self.video_playback_ustreamer_config),
                 streamer_context=StreamerContext(
@@ -325,7 +330,7 @@ class SabrStream:
                      client_info=self.client_info
                  ),
                 buffered_ranges=[
-                    buffered_range for initialized_format in self._initialized_formats.values()
+                    buffered_range for initialized_format in self.initialized_formats.values()
                     for buffered_range in initialized_format.buffered_ranges
                 ],
             )
@@ -347,12 +352,12 @@ class SabrStream:
                 self._request_number += 1
             except TransportError as e:
                 self._logger.warning(f'Transport Error: {e}')
-                retry.error = e
+                self._current_http_retry.error = e
             except HTTPError as e:
                 # retry on 5xx errors only
                 if 500 <= e.status < 600:
                     self._logger.warning(f'HTTP Error: {e.status} - {e.reason}')
-                    retry.error = e
+                    self._current_http_retry.error = e
                 else:
                     raise SabrStreamError(f'HTTP Error: {e.status} - {e.reason}')
 
@@ -361,11 +366,11 @@ class SabrStream:
                     yield from self.parse_ump_response(response)
                 except TransportError as e:
                     self._logger.warning(f'Transport Error during read: {e}')
-                    retry.error = e
+                    self._current_http_retry.error = e
 
             # We are expecting to stay in the same place for a retry or a redirect
-            if not self._is_retry and not retry.error:
-                http_retry_manager = None
+            if not self._is_retry and not self._current_http_retry.error:
+                self._http_retry_manager = None
                 # Calculate and apply the next playback time to skip to
                 if not self._redirected:
                     yield from self._prepare_next_playback_time()
@@ -397,7 +402,7 @@ class SabrStream:
             self._timestamp_no_data = None
 
 
-        for izf in self._initialized_formats.values():
+        for izf in self.initialized_formats.values():
             if not izf.current_segment:
                 continue
 
@@ -432,7 +437,7 @@ class SabrStream:
         #   1. find the buffered format that matches player_time_ms.
         #   2. find the last buffered range in sequence (in case multiple are joined together)
         latest_buffered_ranges = []
-        for izf in self._initialized_formats.values():
+        for izf in self.initialized_formats.values():
             for br in izf.buffered_ranges:
                 if br.start_time_ms <= self._client_abr_state.player_time_ms <= br.start_time_ms + br.duration_ms:
                     chain = get_br_chain(br, izf.buffered_ranges)
@@ -446,7 +451,7 @@ class SabrStream:
             lowest_izf_buffered_range = min(latest_buffered_ranges, key=lambda br: br.start_time_ms + br.duration_ms)
             min_buffered_duration_ms = lowest_izf_buffered_range.start_time_ms + lowest_izf_buffered_range.duration_ms
 
-        if len(latest_buffered_ranges) != len(self._initialized_formats) or min_buffered_duration_ms is None:
+        if len(latest_buffered_ranges) != len(self.initialized_formats) or min_buffered_duration_ms is None:
             # Missing a buffered range for a format.
             # In this case, consider player_time_ms to be our correct next time
             # May happen in the case of:
@@ -473,8 +478,8 @@ class SabrStream:
         # Check if the latest segment is the last one of each format (if data is available)
         if (
             not self.is_live
-            and self._initialized_formats
-            and len(latest_buffered_ranges) == len(self._initialized_formats)
+            and self.initialized_formats
+            and len(latest_buffered_ranges) == len(self.initialized_formats)
             and all(
                 (
                     initialized_format.discard or
@@ -485,7 +490,7 @@ class SabrStream:
                         and initialized_format.buffered_ranges[-1].end_segment_index >= initialized_format.total_sequences
                     )
                 )
-                for initialized_format in self._initialized_formats.values()
+                for initialized_format in self.initialized_formats.values()
             )
         ):
             self.write_sabr_debug(f'Reached last segment for all formats, assuming end of media')
@@ -588,7 +593,7 @@ class SabrStream:
             # Unknown when this is used, but it is not supported
             raise SabrStreamError(f'Compression not supported in MediaHeader (media_header={media_header})')
 
-        initialized_format = self._initialized_formats.get(str(media_header.format_id))
+        initialized_format = self.initialized_formats.get(str(media_header.format_id))
         if not initialized_format:
             self.write_sabr_debug(f'Initialized format not found for {media_header.format_id}', part=part)
             return
@@ -792,7 +797,7 @@ class SabrStream:
         # If we have a head sequence number, we need to update the total sequences for each initialized format
         # For livestreams, it is not available in the format initialization metadata
         if self._live_metadata.head_sequence_number:
-            for izf in self._initialized_formats.values():
+            for izf in self.initialized_formats.values():
                 izf.total_sequences = self._live_metadata.head_sequence_number
 
     def process_stream_protection_status(self, part: UMPPart):
@@ -856,7 +861,7 @@ class SabrStream:
         fmt_init_metadata = protobug.loads(part.data, FormatInitializationMetadata)
         self.write_sabr_debug(part=part, protobug_obj=fmt_init_metadata, data=part.data)
 
-        if str(fmt_init_metadata.format_id) in self._initialized_formats:
+        if str(fmt_init_metadata.format_id) in self.initialized_formats:
             self.write_sabr_debug('Format already initialized', part)
             return
 
@@ -871,7 +876,7 @@ class SabrStream:
         # Changing a format will require adding some logic to handle inactive formats.
         # Given we only provide one FormatId currently, and this should not occur in this case,
         # we will mark this as not currently supported and bail.
-        for izf in self._initialized_formats.values():
+        for izf in self.initialized_formats.values():
             if izf.format_selector is format_selector:
                 raise SabrStreamError('Server changed format. Changing formats is not currently supported')
 
@@ -909,7 +914,7 @@ class SabrStream:
                 )
             )]
 
-        self._initialized_formats[str(fmt_init_metadata.format_id)] = initialized_format
+        self.initialized_formats[str(fmt_init_metadata.format_id)] = initialized_format
         self.write_sabr_debug(f'Initialized Format: {initialized_format}', part=part)
 
     def process_next_request_policy(self, part: UMPPart):
@@ -925,7 +930,7 @@ class SabrStream:
 
         # Clear latest segment of each initialized format
         #  as we expect them to no longer be in order.
-        for initialized_format in self._initialized_formats.values():
+        for initialized_format in self.initialized_formats.values():
             initialized_format.current_segment = None
             yield MediaSeekSabrPart(
                 reason=MediaSeekSabrPart.Reason.SERVER_SEEK,
@@ -936,7 +941,7 @@ class SabrStream:
     def process_sabr_error(self, part: UMPPart):
         sabr_error = protobug.loads(part.data, SabrError)
         self.write_sabr_debug(part=part, protobug_obj=sabr_error, data=part.data)
-        raise SabrStreamError(f'SABR Returned Error: {sabr_error}')
+        self._current_http_retry.error = SabrStreamError(f'SABR Returned Error: {sabr_error}')
 
     def process_expiry(self):
         expires_at = int_or_none(traverse_obj(parse_qs(self.server_abr_streaming_url), ('expire', 0), get_all=False))
