@@ -233,6 +233,7 @@ class SABRFD(FileDownloader):
                         elif isinstance(part, RefreshPlayerResponseSabrPart):
                             self.to_screen(f'Refreshing player response; Reason: {part.reason}')
                             # In-place refresh - not ideal but should work in most cases
+                            # todo: handle case where live stream changes to non-livestream on refresh
                             if not format_group['reload_config_fn']:
                                 raise self.report_warning(
                                     'No reload config function found - cannot refresh SABR streaming URL.'

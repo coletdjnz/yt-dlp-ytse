@@ -174,12 +174,11 @@ class SabrStream:
     This includes after a seek (e.g. SABR_SEEK).
 
     TODO:
-    - Retry logic is completely broken and causes the video to skip all over the place
-    - Handling for live_metadata not being present
     - Improved logging for debugging (unexpected errors / warnings should contain enough context to debug them)
     - Unit testing various scenarios, particularly the edge cases
     - Increment player_time_ms if we received segments in the request (inc skipped as already seen)
     - Decouple logger from YDL
+    - Retry on sabr error - include as part of http errors
     """
 
     def __init__(
@@ -212,6 +211,7 @@ class SabrStream:
         self.start_time_ms = start_time_ms
         self.http_retries = http_retries
         self.host_fallback_threshold = host_fallback_threshold
+        self.max_empty_requests = 3
         self.live_end_wait_sec = live_end_wait_sec
 
         if self.live_segment_target_duration_sec:
@@ -253,9 +253,15 @@ class SabrStream:
     def close(self):
         self._consumed = True
 
-
     def __iter__(self):
         return self.iter_parts()
+
+    @property
+    def is_live(self):
+        return bool(
+            self._live_metadata or
+            str_or_none(parse_qs(self.server_abr_streaming_url).get('source', [None])[0]) == 'yt_live_broadcast'
+        )
 
     def _initialize_cabr_state(self):
         # note: video only is not supported
@@ -364,6 +370,7 @@ class SabrStream:
                 if not self._redirected:
                     yield from self._prepare_next_playback_time()
 
+            self._live_metadata = None
             self._next_request_policy = None
             self._redirected = False
             self._is_retry = False
@@ -452,10 +459,10 @@ class SabrStream:
             else:
                 min_buffered_duration_ms = min(min_buffered_duration_ms, self._client_abr_state.player_time_ms)
 
+        # xxx: this *should not* be provided by the server if we had segments in this request. Only if we didn't.
+        #  we perhaps should validate this.
         next_request_backoff_ms = (self._next_request_policy and self._next_request_policy.backoff_time_ms) or 0
 
-        # TODO: we should also consider incrementing player_time_ms if we already had all segments (i.e. check which segments we skipped and why)
-        #  Generally, next_request_policy backoff_time_ms will set this but we should also default it to not rely on it
         request_player_time = self._client_abr_state.player_time_ms
         self._client_abr_state.player_time_ms = max(
             min_buffered_duration_ms,
@@ -464,9 +471,8 @@ class SabrStream:
         )
 
         # Check if the latest segment is the last one of each format (if data is available)
-        # TODO: fallback livestream handling when we don't have live_metadata
         if (
-            not self._live_metadata
+            not self.is_live
             and self._initialized_formats
             and len(latest_buffered_ranges) == len(self._initialized_formats)
             and all(
@@ -488,16 +494,14 @@ class SabrStream:
         # Check if we have exceeded the total duration of the media (if not live),
         #  or wait for the next segment (if live)
         elif self._total_duration_ms and (self._client_abr_state.player_time_ms >= self._total_duration_ms):
-            if self._live_metadata:
+            if self.is_live:
                 self._client_abr_state.player_time_ms = self._total_duration_ms
-                # TODO: we need this for live streams in the case there is no live_metadata
                 if (
-                    self._requests_no_data > 3
+                    self._requests_no_data > self.max_empty_requests
                     and self._timestamp_no_data
-                    and not self._redirected
                     and self._timestamp_no_data < time.time() + self.live_end_wait_sec
                 ):
-                    self._logger.debug(f'No fragments received for at least {self.live_end_wait_sec} seconds, assuming end of live stream')
+                    self._logger.debug(f'No segments received for at least {self.live_end_wait_sec} seconds, assuming end of live stream')
                     self._consumed = True
                 else:
                     wait_seconds = (next_request_backoff_ms // 1000) + self.live_segment_target_duration_sec
@@ -505,17 +509,19 @@ class SabrStream:
                 self.write_sabr_debug(f'End of media (player time ms {self._client_abr_state.player_time_ms} >= total duration ms {self._total_duration_ms})')
                 self._consumed = True
 
-        # Guard against receiving no data before end of video/stream
-        # TODO: add a fallback here for livestreams, if we can't get the total_duration_ms or live_metadata doesn't exist
-        if (
-            (not self._total_duration_ms or (self._client_abr_state.player_time_ms < self._total_duration_ms))
-            and request_player_time == self._client_abr_state.player_time_ms
-            and not self._consumed
-            and not self._redirected
-            and self._requests_no_data > 3
+        # Handle receiving no data before end the end of the video/stream
+        # For videos, if exceeds max_empty_requests, this should not happen so we raise an error
+        # For livestreams, if we exceed max_empty_requests, and have not received any data for a while, we can assume the stream has ended
+        elif (
+            request_player_time == self._client_abr_state.player_time_ms
+            and self._requests_no_data > self.max_empty_requests
         ):
-            raise SabrStreamError('No data found in three consecutive requests')
+            if not self.is_live:
+                raise SabrStreamError('No data found in three consecutive requests')
 
+            if self._timestamp_no_data and self._timestamp_no_data < time.time() + self.live_end_wait_sec:
+                self._logger.debug(f'No segments received for at least {self.live_end_wait_sec} seconds, assuming end of live stream')
+                self._consumed = True
 
         if not self._consumed:
             self.write_sabr_debug(f'Next request player time ms: {self._client_abr_state.player_time_ms}, total duration ms: {self._total_duration_ms}')
@@ -632,7 +638,7 @@ class SabrStream:
             or (time_range and time_range.get_duration_ms()))
 
         estimated_duration_ms = None
-        if self._live_metadata:
+        if self.is_live:
             estimated_duration_ms = self.live_segment_target_duration_sec * 1000
 
         # TODO: should this really default to 0?
@@ -748,7 +754,7 @@ class SabrStream:
             return
 
         buffered_range.end_segment_index = segment.sequence_number
-        if not self._live_metadata or not segment.duration_estimated:
+        if not self.is_live or not segment.duration_estimated:
             # We need to increment both duration_ms and time_range.duration
             buffered_range.duration_ms += segment.duration_ms
             if buffered_range.time_range.timescale != 1000:
