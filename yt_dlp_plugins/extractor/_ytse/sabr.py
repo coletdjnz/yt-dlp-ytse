@@ -82,10 +82,17 @@ class MediaSegmentSabrPart(SabrPart):
     format_id: FormatId
     player_time_ms: int = 0
     start_bytes: int = None
-    fragment_index: int = None
+    sequence_number: int = None
     fragment_count: int = None
     is_init_segment: bool = False
     data: bytes = b''
+    buffered_ranges: List[BufferedRange] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
+class FormatInitializedSabrPart(SabrPart):
+    format_id: FormatId
+    format_selector: FormatSelector
 
 
 @dataclasses.dataclass
@@ -150,7 +157,7 @@ class InitializedFormat:
     mime_type: str = None
     # Current segment in the sequence. Set to None to break the sequence and allow a seek.
     current_segment: Segment | None = None
-    init_segment: Segment | None = None
+    init_segment: Segment | None | bool = None
     buffered_ranges: List[BufferedRange] = dataclasses.field(default_factory=list)
     total_sequences: int = None
     # Whether we should discard any data received for this format
@@ -566,7 +573,7 @@ class SabrStream:
             elif part.part_type == UMPPartType.SABR_REDIRECT:
                 self.process_sabr_redirect(part)
             elif part.part_type == UMPPartType.FORMAT_INITIALIZATION_METADATA:
-                self.process_format_initialization_metadata(part)
+                yield from self.process_format_initialization_metadata(part)
             elif part.part_type == UMPPartType.NEXT_REQUEST_POLICY:
                 self.process_next_request_policy(part)
             elif part.part_type == UMPPartType.LIVE_METADATA:
@@ -619,7 +626,7 @@ class SabrStream:
         # Note: we don't care if formats/segments to discard are out of order
         #  (this can be expected if discarding audio - video format may be more ahead slightly)
         previous_segment = initialized_format.current_segment
-        if previous_segment and not is_init_segment and not discard:
+        if previous_segment and not is_init_segment and not previous_segment.discard and not discard:
             if sequence_number <= previous_segment.sequence_number:
                 self.write_sabr_debug(f'Segment {sequence_number} before or same as previous segment, will discard as probably already seen', part=part)
                 discard = True
@@ -712,11 +719,12 @@ class SabrStream:
                 format_selector=segment.initialized_format.format_selector,
                 format_id=segment.format_id,
                 player_time_ms=self._client_abr_state.player_time_ms,
-                fragment_index=segment.sequence_number,
+                sequence_number=segment.sequence_number,
                 fragment_count=segment.initialized_format.total_sequences,
                 data=segment.data,
                 start_bytes=segment.start_data_range,
-                is_init_segment=segment.is_init_segment
+                is_init_segment=segment.is_init_segment,
+                buffered_ranges=segment.initialized_format.buffered_ranges,
             )
         else:
             self.write_sabr_debug(f'Discarding media for {segment.initialized_format.format_id}', part=part)
@@ -916,12 +924,17 @@ class SabrStream:
 
         self.initialized_formats[str(fmt_init_metadata.format_id)] = initialized_format
         self.write_sabr_debug(f'Initialized Format: {initialized_format}', part=part)
+        yield FormatInitializedSabrPart(
+            format_id=fmt_init_metadata.format_id,
+            format_selector=format_selector,
+        )
 
     def process_next_request_policy(self, part: UMPPart):
         self._next_request_policy = protobug.loads(part.data, NextRequestPolicy)
         self.write_sabr_debug(part=part, protobug_obj=self._next_request_policy, data=part.data)
 
     def process_sabr_seek(self, part: UMPPart):
+        # NOTE: this does interfere with livestream resume if we did ever want to support that
         sabr_seek = protobug.loads(part.data, SabrSeek)
         seek_to = math.ceil((sabr_seek.seek_time_ticks / sabr_seek.timescale) * 1000)
         self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
