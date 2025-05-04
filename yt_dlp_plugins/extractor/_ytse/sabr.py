@@ -112,7 +112,7 @@ class RefreshPlayerResponseSabrPart(SabrPart):
 
 @dataclasses.dataclass
 class MediaSeekSabrPart(SabrPart):
-    # Lets the caller know the media sequence for a format may change
+    # Lets the consumer know the media sequence for a format may change
     class Reason(enum.Enum):
         UNKNOWN = enum.auto()
         SERVER_SEEK = enum.auto()  # SABR_SEEK from server
@@ -640,10 +640,14 @@ class SabrStream:
         estimated_duration_ms = None
         if self.is_live:
             estimated_duration_ms = self.live_segment_target_duration_sec * 1000
+        elif is_init_segment:
+            estimated_duration_ms = 0
 
-        # TODO: should this really default to 0?
-        #  Is there any valid case for that?
-        duration_ms = actual_duration_ms or estimated_duration_ms or 0
+        duration_ms = actual_duration_ms or estimated_duration_ms
+
+        # Guard: Bail out if we cannot determine the duration, which we need to progress.
+        if duration_ms is None:
+            raise SabrStreamError(f'Cannot determine duration of segment {sequence_number} (media_header={media_header})')
 
         segment = Segment(
             format_id=media_header.format_id,
@@ -678,7 +682,7 @@ class SabrStream:
     def process_media_end(self, part: UMPPart):
         header_id = part.data[0]
         self.write_sabr_debug(f'Header ID: {header_id}', part=part)
-        segment: Segment = self._header_ids.pop(header_id, None)
+        segment = self._header_ids.pop(header_id, None)
 
         if not segment:
             self.write_sabr_debug(f'Received a MediaEnd for an unknown or already finished header ID {header_id}', part=part)
@@ -692,13 +696,14 @@ class SabrStream:
                 f'expected {segment.content_length}, got {len(segment.data)}'
             )
 
-        # Return the segment here because:
+        # Return the segment here instead of during MEDIA part(s) because:
         # 1. We can validate that we received the correct data length
-        # 2. In the case of a retry during segment media, the partial data is not sent to the caller
+        # 2. In the case of a retry during segment media, the partial data is not sent to the consumer
+        sabr_part = None
         if not segment.discard:
-            # TODO: should we yield before or after processing the segment?
-            # this should be after so if syncing buffered ranges we get the latest that reflects the segment
-            yield MediaSegmentSabrPart(
+            # This needs to be yielded AFTER we have processed the segment (updated buffered ranges, etc.)
+            # So the consumer can see the updated buffered ranges and use them for e.g. syncing
+            sabr_part = MediaSegmentSabrPart(
                 format_selector=segment.initialized_format.format_selector,
                 format_id=segment.format_id,
                 player_time_ms=self._client_abr_state.player_time_ms,
@@ -714,6 +719,8 @@ class SabrStream:
         if segment.is_init_segment:
             segment.initialized_format.init_segment = segment
             # Do not create a buffered range for init segments
+            if sabr_part:
+                yield sabr_part
             return
 
         segment.initialized_format.current_segment = segment
@@ -732,11 +739,13 @@ class SabrStream:
             # This can be expected to happen in the case of video-only, where we discard the audio track (and mark it as entirely buffered)
             # We still want to create/update buffered range for discarded media IF it is not already buffered
             self.write_sabr_debug(f'Segment {segment.sequence_number} already buffered, not creating or updating buffered range (discard={segment.discard})', part=part)
+            if sabr_part:
+                yield sabr_part
             return
 
 
         if not buffered_range:
-            # Create a new buffered range
+            # Create a new buffered range starting from this segment
             segment.initialized_format.buffered_ranges.append(BufferedRange(
                 format_id=segment.initialized_format.format_id,
                 start_time_ms=segment.start_ms,
@@ -751,6 +760,8 @@ class SabrStream:
             ))
             self.write_sabr_debug(
                 part=part, message=f'Created new buffered range for {segment.initialized_format.format_id} {segment.initialized_format.buffered_ranges[-1]}')
+            if sabr_part:
+                yield sabr_part
             return
 
         buffered_range.end_segment_index = segment.sequence_number
@@ -768,6 +779,9 @@ class SabrStream:
 
             new_duration = (segment.start_ms - buffered_range.start_time_ms) + segment.duration_ms
             buffered_range.duration_ms = buffered_range.time_range.duration_ticks = new_duration
+
+        if sabr_part:
+            yield sabr_part
 
     def process_live_metadata(self, part: UMPPart):
         self._live_metadata = protobug.loads(part.data, LiveMetadata)
@@ -904,12 +918,13 @@ class SabrStream:
 
     def process_sabr_seek(self, part: UMPPart):
         sabr_seek = protobug.loads(part.data, SabrSeek)
-        seek_to = math.ceil((sabr_seek.seek_time / sabr_seek.timescale) * 1000)
+        seek_to = math.ceil((sabr_seek.seek_time_ticks / sabr_seek.timescale) * 1000)
         self.write_sabr_debug(part=part, protobug_obj=sabr_seek, data=part.data)
         self.write_sabr_debug(f'Seeking to {seek_to}ms')
         self._client_abr_state.player_time_ms = seek_to
 
-        # Clear latest segment as will no longer be in order
+        # Clear latest segment of each initialized format
+        #  as we expect them to no longer be in order.
         for initialized_format in self._initialized_formats.values():
             initialized_format.current_segment = None
             yield MediaSeekSabrPart(
