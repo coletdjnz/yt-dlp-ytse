@@ -8,6 +8,8 @@ import protobug
 from yt_dlp.downloader import FileDownloader
 from yt_dlp.networking.exceptions import TransportError, HTTPError
 
+from ..protos.videostreaming.time_range import TimeRange
+
 try:
     from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
 except ImportError:
@@ -35,41 +37,43 @@ class SABRStatus:
 @protobug.message
 class SabrSegment:
     sequence_number: protobug.Int32 = protobug.field(1)
-    content_length: protobug.Int64 = protobug.field(3)
+    start_time_ms: protobug.Int64 = protobug.field(2)
+    duration_ms: protobug.Int64 = protobug.field(3)
+    content_length: protobug.Int64 = protobug.field(5)
 
 
 @protobug.message
 class SabrSequence:
-    sequence_start_number: protobug.Int32 = protobug.field(2)
-    sequence_filename: protobug.String = protobug.field(3)
-    segments: list[SabrSegment] = protobug.field(4)
+    sequence_start_number: protobug.Int32 = protobug.field(1)
+    # The segments may not have a start byte range, so to keep it simple we will track
+    # length of the sequence. We can infer from this and the segment's content_length where they should end and begin.
+    sequence_content_length: protobug.Int64 = protobug.field(2)
+    first_segment: SabrSegment = protobug.field(3)
+    last_segment: typing.Optional[SabrSegment] = protobug.field(4, default=None)
 
 @protobug.message
 class SabrInitSegment:
-    filename: protobug.String = protobug.field(1)
     content_length: protobug.Int64 = protobug.field(2)
+    # todo: init and index ranges
+
 
 # protobug class that we will save to a file to track the current downloaded progress of a sabr format
 @protobug.message
 class SabrProgressDocument:
     format_id: FormatId = protobug.field(1)
-    buffered_ranges: list[BufferedRange] = protobug.field(2, default_factory=list)
-    init_segment: typing.Optional[SabrInitSegment] = protobug.field(3, default=None)
-    sequences: list[SabrSequence] = protobug.field(4, default_factory=list)
+    init_segment: typing.Optional[SabrInitSegment] = protobug.field(2, default=None)
+    sequences: list[SabrSequence] = protobug.field(3, default_factory=list)
 
     # xxx: rewrite this crap
     def find_sequence(self, sequence_number):
         for sequence in self.sequences:
             if sequence.sequence_start_number > sequence_number:
                 continue
-            sorted_segments = sorted(sequence.segments, key=lambda s: s.sequence_number)
-            if not sorted_segments:
-                raise Exception('Corrupt sequence')
-            last_segment = sorted_segments[-1]
-            if last_segment == sequence_number:
-                raise Exception('Segment already downloaded')
 
-            if last_segment.sequence_number == sequence_number - 1:
+            if sequence.first_segment.sequence_number <= sequence_number <= sequence.last_segment.sequence_number:
+                raise DownloadError('Segment already downloaded')
+
+            if sequence.last_segment.sequence_number == sequence_number - 1:
                 return sequence
 
         return None
@@ -166,8 +170,6 @@ class SABRFDWriter:
         self.initialize_format(part.format_id)
 
         progress_document = self.get_progress_document()
-        # todo: this should merge with the existing buffered ranges
-        progress_document.buffered_ranges = part.buffered_ranges
         content_length = len(part.data)
 
         data_filename = None
@@ -175,23 +177,24 @@ class SABRFDWriter:
         if not part.is_init_segment:
             segment = SabrSegment(
                 sequence_number=part.sequence_number,
+                start_time_ms=part.start_time_ms,
+                duration_ms=part.duration_ms,
                 content_length=content_length,
             )
-            # TODO: we should limit sequence size
-            # TODO: we should perhaps store sequence information in another file, so we don't have to keep editing the main one
-            #  Sometimes if the file gets too large it can become easy to corrupt on shutdown
             sequence = progress_document.find_sequence(part.sequence_number)
             if not sequence:
                 sequence = SabrSequence(
                     sequence_start_number=part.sequence_number,
-                    sequence_filename=self._sabr_sequence_filename(part.sequence_number),
-                    segments=[segment],
+                    sequence_content_length=content_length,
+                    first_segment=segment,
+                    last_segment=segment
                 )
                 progress_document.sequences.append(sequence)
             else:
-                sequence.segments.append(segment)
+                sequence.last_segment = segment
+                sequence.sequence_content_length += content_length
 
-            data_filename = sequence.sequence_filename
+            data_filename = self._sabr_sequence_filename(sequence.sequence_start_number)
             sequence_id = sequence.sequence_start_number
         else:
             if progress_document.init_segment:
@@ -199,7 +202,6 @@ class SABRFDWriter:
             sequence_id = 'init'
             data_filename = self._sabr_sequence_filename(sequence_id)
             progress_document.init_segment = SabrInitSegment(
-                filename=data_filename,
                 content_length=content_length,
             )
 
@@ -212,7 +214,7 @@ class SABRFDWriter:
 
         # calculate total downloaded bytes from all segments in all sequences
         self._downloaded_bytes = sum(
-            sum(segment.content_length for segment in sequence.segments)
+            sequence.sequence_content_length
             for sequence in progress_document.sequences
         ) + (progress_document.init_segment.content_length if progress_document.init_segment else 0)
 
@@ -251,15 +253,16 @@ class SABRFDWriter:
         sequence_filenames = []
         # May not always be an init segment, e.g for live streams
         if progress_document.init_segment:
-            init_segment_fp, init_segment_filename = self.fd.sanitize_open(progress_document.init_segment.filename, 'rb')
+            init_segment_fp, init_segment_filename = self.fd.sanitize_open(self._sabr_sequence_filename('init'), 'rb')
             # Write the init segment if it exists
             self.fp.write(init_segment_fp.read())
             init_segment_fp.close()
             sequence_filenames.append(init_segment_filename)
 
         # Write the segments
+        # TODO: handling of disjointed segments
         for sequence in sorted(progress_document.sequences, key=lambda s: s.sequence_start_number):
-            sequence_fp, sequence_filename = self.fd.sanitize_open(sequence.sequence_filename, 'rb')
+            sequence_fp, sequence_filename = self.fd.sanitize_open(self._sabr_sequence_filename(sequence.sequence_start_number), 'rb')
             sequence_filenames.append(sequence_filename)
             self.fp.write(sequence_fp.read())
             sequence_fp.close()
@@ -456,14 +459,32 @@ class SABRFD(FileDownloader):
                                 if progress_document.init_segment:
                                     initialized_format.init_segment = True
                                     initialized_format.current_segment = None  # allow a seek
-                                if progress_document.buffered_ranges:
-                                    initialized_format.buffered_ranges = progress_document.buffered_ranges
+
+                                # Build buffered ranges from the sequences
+                                buffered_ranges = []
+                                for sequence in progress_document.sequences:
+                                    buffered_range = BufferedRange(
+                                        format_id=progress_document.format_id,
+                                        start_time_ms=sequence.first_segment.start_time_ms,
+                                        duration_ms=sequence.last_segment.start_time_ms + sequence.last_segment.duration_ms,
+                                        start_segment_index=sequence.first_segment.sequence_number,
+                                        end_segment_index=sequence.last_segment.sequence_number,
+                                        time_range=TimeRange(
+                                            start_ticks=sequence.first_segment.start_time_ms,
+                                            duration_ticks=sequence.last_segment.start_time_ms + sequence.last_segment.duration_ms,
+                                            timescale=1000
+                                        )
+                                    )
+                                    buffered_ranges.append(buffered_range)
+                                if buffered_ranges:
+                                    initialized_format.buffered_ranges = buffered_ranges
                                     initialized_format.current_segment = None  # allow a seek
 
 
-                                self.to_screen(f'[download] Resuming download for format {part.format_id} with {len(progress_document.buffered_ranges)} buffered ranges')
+                                self.to_screen(f'[download] Resuming download for format {part.format_id} with {len(buffered_ranges)} buffered ranges')
 
                             else:
+                                # TODO: should delete it as SabrFDWriter will still try to read from it
                                 self.to_screen('[download] Ignoring progress document because continuedl is False')
                         elif isinstance(part, MediaSegmentSabrPart):
                             total_bytes += len(part.data)

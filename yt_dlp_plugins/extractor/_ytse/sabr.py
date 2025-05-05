@@ -80,7 +80,9 @@ class SabrPart:
 class MediaSegmentSabrPart(SabrPart):
     format_selector: FormatSelector
     format_id: FormatId
-    player_time_ms: int = 0
+    start_time_ms: int = None
+    player_time_ms: int = None
+    duration_ms: int = None
     start_bytes: int = None
     sequence_number: int = None
     fragment_count: int = None
@@ -723,7 +725,9 @@ class SabrStream:
                 sequence_number=segment.sequence_number,
                 fragment_count=segment.initialized_format.total_sequences,
                 data=segment.data,
+                duration_ms=segment.duration_ms,
                 start_bytes=segment.start_data_range,
+                start_time_ms=segment.start_ms,
                 is_init_segment=segment.is_init_segment,
                 buffered_ranges=segment.initialized_format.buffered_ranges,
             )
@@ -781,6 +785,8 @@ class SabrStream:
         buffered_range.end_segment_index = segment.sequence_number
         if not self.is_live or not segment.duration_estimated:
             # We need to increment both duration_ms and time_range.duration
+            # TODO: this should be the same as segment.start_ms + segment.duration_ms
+            #  which is the same as what we do for livestreams
             buffered_range.duration_ms += segment.duration_ms
             if buffered_range.time_range.timescale != 1000:
                 raise SabrStreamError(f'Buffered range timescale bad: {buffered_range.time_range.timescale} != 1000')
