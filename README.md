@@ -12,14 +12,12 @@ Experimental YouTube streaming features for yt-dlp.
     * [pip/pipx](#pippipx)
   * [Usage](#usage)
     * [UMP Downloader](#ump-downloader)
-    * [SABR Downloader](#sabr-downloader)
   * [Acknowledgements](#acknowledgements)
 <!-- TOC -->
 
 ## Features
 
 - [UMP Downloader](#ump-downloader)
-- [SABR Downloader](#sabr-downloader)
 
 ## Installing
 
@@ -85,31 +83,6 @@ Debug UMP messages:
 `--extractor-args "youtube:ump_debug=1;formats=ump"`
 
 
-### SABR Downloader
-
-Enable SABR formats:
-
-`--extractor-args youtube:formats=sabr`
-
-<!--
-Prioritize SABR formats:
-
-`-S proto:sabr`
--->
-
-Debug SABR messages:
-
-`--extractor-args "youtube:sabr_debug=1;formats=sabr"`
-
-Supports:
-- Standard video downloading
-  - Note: SABR does not natively support downloading only video stream, so an audio stream is always downloaded (but discarded)
-- Livestreams (including `--live-from-start`)
-
-Not supported:
-- `--download-sections`
-- `--concurrent-fragments/-N`
-- Resume downloads
 
 
 See also:
