@@ -5,22 +5,18 @@ from yt_dlp_plugins.extractor._ytse.protos.videostreaming.buffered_range import 
 from yt_dlp_plugins.extractor._ytse.protos.videostreaming.client_abr_state import ClientAbrState
 from yt_dlp_plugins.extractor._ytse.protos.videostreaming.format_id import FormatId
 from yt_dlp_plugins.extractor._ytse.protos.videostreaming.streamer_context import StreamerContext
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.time_range import TimeRange
 
-
-@protobug.message
-class UnknownMessage1:
-    unknown_field_1: typing.Optional[protobug.Int32] = protobug.field(1, default=None)
-    unknown_field_2: typing.Optional[protobug.Int32] = protobug.field(2, default=None)
-    unknown_field_3: typing.Optional[protobug.Int32] = protobug.field(3, default=None)
-
-
+# Something related to halting the current request (for ad injection)
+# Keeps track of current in progress segment?
 @protobug.message
 class UnknownMessage2:
     format_id: typing.Optional[FormatId] = protobug.field(1, default=None)
-    unknown_field_2: typing.Optional[protobug.Int32] = protobug.field(2, default=None)
+    sequence_lmt: typing.Optional[protobug.Int32] = protobug.field(2, default=None) # same as field 16 of media header? "sl"
     sequence_number: typing.Optional[protobug.Int32] = protobug.field(3, default=None)
-    unknown_field_4: typing.Optional[UnknownMessage1] = protobug.field(4, default=None)
-    unknown_field_5: typing.Optional[protobug.Int32] = protobug.field(5, default=None)
+    time_range: typing.Optional[TimeRange] = protobug.field(4, default=None)
+    unknown_field_5: typing.Optional[protobug.Int32] = protobug.field(5, default=None) # _lb (last byte?)
+    unknown_field_6: typing.Optional[protobug.Int32] = protobug.field(6, default=None) # _ed (end duration?)
 
 
 @protobug.message
@@ -45,7 +41,7 @@ class VideoPlaybackAbrRequest:
     client_abr_state: ClientAbrState = protobug.field(1, default=None)
     initialized_format_ids: list[FormatId] = protobug.field(2, default_factory=list)
     buffered_ranges: list[BufferedRange] = protobug.field(3, default_factory=list)
-    player_time_ms: typing.Optional[protobug.Int64] = protobug.field(4, default=None)
+    player_time_ms: typing.Optional[protobug.Int64] = protobug.field(4, default=None) # unused in sabr
     video_playback_ustreamer_config: typing.Optional[protobug.Bytes] = protobug.field(5, default=None)
     unknown_field_6: list[UnknownMessage2] = protobug.field(6, default_factory=list)
 
