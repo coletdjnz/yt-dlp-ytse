@@ -30,6 +30,7 @@ class ClientAbrState:
     time_since_last_seek: typing.Optional[protobug.Int64] = protobug.field(29, default=None)
     data_saver_mode: typing.Optional[protobug.Int32] = protobug.field(30, default=None)  # seen on android = 0, todo: enum or bool? or low_power_mode
     network_metered_state: typing.Optional[NetworkMeteredState] = protobug.field(32, default=None)
+    unknown_field_33: typing.Optional[protobug.Int32] = protobug.field(33, default=None)  # may be a bool. Seen on android kids = 0
     visibility: typing.Optional[protobug.Int32] = protobug.field(34, default=None)
     playback_rate: typing.Optional[protobug.Float] = protobug.field(35, default=None)
     elapsed_wall_time_ms: typing.Optional[protobug.Int64] = protobug.field(36, default=None)

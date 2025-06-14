@@ -19,6 +19,10 @@ Experimental YouTube streaming features for yt-dlp.
 
 - [UMP Downloader](#ump-downloader)
 
+> [!NOTE]
+> The SABR Downloader has been removed as development has moved to yt-dlp. The one that was present here was an early prototype that was unstable, incomplete and in general not a good example.
+> To see current development, see https://github.com/coletdjnz/yt-dlp-ytse/issues/17
+
 ## Installing
 
 **Requires yt-dlp `2025.01.26` or above.**
