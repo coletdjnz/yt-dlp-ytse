@@ -90,6 +90,7 @@ Debug UMP messages:
 
 
 See also:
+- [Protobuf definitions](yt_dlp_plugins/extractor/_ytse/protos)
 - [mitmproxy SABR parser script](utils/mitmproxy_sabrdump.py)
 - [Read SABR Request Python script](utils/read_sabr_request.py)
 - [Read SABR Response Python script](utils/read_sabr_response.py)
