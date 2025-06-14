@@ -26,7 +26,11 @@ from yt_dlp.utils import (
 )
 from yt_dlp.utils.networking import HTTPHeaderDict
 from yt_dlp_plugins.extractor._ytse.ump import UMPParser, UMPPartType
-from yt_dlp_plugins.extractor._ytse.protos import MediaHeader, SabrError, SabrRedirect, StreamProtectionStatus
+
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.media_header import MediaHeader
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.sabr_redirect import SabrRedirect
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.stream_protection_status import StreamProtectionStatus
+from yt_dlp_plugins.extractor._ytse.protos.videostreaming.sabr_error import SabrError
 
 
 class UMPFD(FileDownloader):
