@@ -105,6 +105,10 @@ class UMPPartType(enum.IntEnum):
     PREWARM_CONNECTION = 65
     PLAYBACK_DEBUG_INFO = 66
     SNACKBAR_MESSAGE = 67
+    NETWORK_TIMING = 69
+    CUEPOINT_LIST = 70
+    STITCHED_REGIONS_OF_INTEREST = 71
+    STITCHED_SEGMENTS_METADATA_LIST = 72
 
     @classmethod
     def _missing_(cls, value):
